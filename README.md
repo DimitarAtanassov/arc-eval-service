@@ -58,7 +58,12 @@ MVP evaluators (all pluggable via the registry — no plugin framework):
 | `token`       | total tokens within budget   | `max_total_tokens`                  |
 | `cost`        | `cost_usd` within budget     | `max_cost_usd`                      |
 
-Adding a new evaluator: implement `Evaluator`, then register it in
+The `latency`, `token` and `cost` evaluators share one shape — measure a metric,
+compare it to a numeric budget, grade the overshoot — so they subclass
+`BudgetEvaluator` (`evaluators/budget.py`) and supply only the metric and labels.
+
+Adding a new evaluator: implement `Evaluator` (or `BudgetEvaluator` for a
+budget-style check), then register it in
 `evaluators/registry.py:default_registry`. Nothing else changes.
 
 ## API

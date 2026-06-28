@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 
 from arc_eval_service.api.schemas import (
     BatchEvaluateRequest,
@@ -64,8 +64,15 @@ async def evaluate(
 async def evaluate_batch(
     request: BatchEvaluateRequest,
     service: ServiceDep,
+    settings: SettingsDep,
 ) -> list[EvaluationRecord]:
     """Evaluate a batch of interactions synchronously, preserving order."""
+    if len(request.items) > settings.max_batch_size:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"batch size {len(request.items)} exceeds "
+            f"max_batch_size ({settings.max_batch_size})",
+        )
     return await service.batch(request.items)
 
 

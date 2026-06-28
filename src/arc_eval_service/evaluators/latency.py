@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import ClassVar
 
 from arc_eval_service.core.errors import EvaluationError
-from arc_eval_service.evaluators.base import Evaluator, ratio_score, require_number
-from arc_eval_service.schemas.models import EvaluationResult, EvaluatorInput
+from arc_eval_service.evaluators.budget import BudgetEvaluator
+from arc_eval_service.schemas.models import EvaluationCase
 
 
-class LatencyEvaluator(Evaluator):
+class LatencyEvaluator(BudgetEvaluator):
     """Pass when ``latency_ms`` is within ``threshold_ms``.
 
     Config:
@@ -18,21 +18,12 @@ class LatencyEvaluator(Evaluator):
 
     name: ClassVar[str] = "latency"
     description: ClassVar[str] = "Response latency must stay within a budget (ms)."
+    config_key: ClassVar[str] = "threshold_ms"
+    value_label: ClassVar[str] = "latency_ms"
+    limit_label: ClassVar[str] = "threshold_ms"
+    value_format: ClassVar[str] = ".2f"
 
-    def evaluate(self, data: EvaluatorInput) -> EvaluationResult:
-        case = data.case
+    def _measure(self, case: EvaluationCase) -> float:
         if case.latency_ms is None:
             raise EvaluationError("latency requires 'latency_ms'")
-
-        threshold = require_number(data.config, "threshold_ms")
-        latency = case.latency_ms
-        passed = latency <= threshold
-        return EvaluationResult(
-            evaluator_name=self.name,
-            score=round(ratio_score(threshold, latency), 4),
-            passed=passed,
-            details={
-                "latency_ms": f"{latency:.2f}",
-                "threshold_ms": f"{threshold:.2f}",
-            },
-        )
+        return case.latency_ms

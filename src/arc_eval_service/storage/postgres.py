@@ -94,7 +94,9 @@ class PostgresEvaluationStore(EvaluationStore):
         return row_to_record(row)
 
     async def list_recent(self, limit: int) -> list[EvaluationRecord]:
-        stmt = select(EvaluationRow).order_by(EvaluationRow.created_at.desc()).limit(limit)
+        stmt = (
+            select(EvaluationRow).order_by(EvaluationRow.created_at.desc()).limit(limit)
+        )
         async with self._sessionmaker() as session:
             rows = (await session.execute(stmt)).scalars().all()
         return [row_to_record(row) for row in rows]

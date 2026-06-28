@@ -33,7 +33,7 @@ class RegexEvaluator(Evaluator):
             raise EvaluationError("regex requires 'output'")
 
         pattern = require_str(data.config, "pattern")
-        mode = optional_str(data.config, "mode", "search")
+        mode = optional_str(data.config, "mode", default="search")
         if mode not in {"search", "fullmatch"}:
             raise EvaluationError("regex 'mode' must be 'search' or 'fullmatch'")
         case_sensitive = optional_bool(data.config, "case_sensitive", default=True)

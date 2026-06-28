@@ -34,3 +34,11 @@ class EvaluationStore(ABC):
     async def list_recent(self, limit: int) -> list[EvaluationRecord]:
         """Return up to ``limit`` records, most recently created first."""
         raise NotImplementedError
+
+    async def dispose(self) -> None:
+        """Release any held resources on shutdown.
+
+        No-op by default (e.g. the in-memory store); backends that hold a
+        connection pool override this to close it gracefully.
+        """
+        return None

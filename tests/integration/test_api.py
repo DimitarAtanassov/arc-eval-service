@@ -1,7 +1,10 @@
 """Integration tests for the HTTP API via httpx AsyncClient."""
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
+
+from arc_eval_service.api.main import create_app
+from arc_eval_service.core.config import get_settings
 
 pytestmark = pytest.mark.integration
 
@@ -99,6 +102,26 @@ async def test_batch_preserves_order(client: AsyncClient):
     assert [r["request_id"] for r in body] == ["b1", "b2"]
     assert body[0]["passed"] is True
     assert body[1]["passed"] is False
+
+
+async def test_batch_over_max_batch_size_is_413(monkeypatch):
+    monkeypatch.setenv("ARC_EVAL_MAX_BATCH_SIZE", "1")
+    get_settings.cache_clear()
+    item = {
+        "case": {"request_id": "b", "output": "a", "reference": "a"},
+        "evaluators": [{"name": "exact_match"}],
+    }
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/v1/evaluate/batch", json={"items": [item, item]})
+    assert response.status_code == 413
+    assert "max_batch_size" in response.json()["detail"]
+
+
+async def test_lifespan_disposes_store_on_shutdown():
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        pass  # exiting the context triggers shutdown -> store.dispose()
 
 
 async def test_evaluator_error_is_captured_not_fatal(client: AsyncClient):

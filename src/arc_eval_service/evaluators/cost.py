@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import ClassVar
 
 from arc_eval_service.core.errors import EvaluationError
-from arc_eval_service.evaluators.base import Evaluator, ratio_score, require_number
-from arc_eval_service.schemas.models import EvaluationResult, EvaluatorInput
+from arc_eval_service.evaluators.budget import BudgetEvaluator
+from arc_eval_service.schemas.models import EvaluationCase
 
 
-class CostEvaluator(Evaluator):
+class CostEvaluator(BudgetEvaluator):
     """Pass when ``cost_usd`` is within ``max_cost_usd``.
 
     Config:
@@ -18,21 +18,12 @@ class CostEvaluator(Evaluator):
 
     name: ClassVar[str] = "cost"
     description: ClassVar[str] = "Interaction cost must stay within a budget (USD)."
+    config_key: ClassVar[str] = "max_cost_usd"
+    value_label: ClassVar[str] = "cost_usd"
+    limit_label: ClassVar[str] = "max_cost_usd"
+    value_format: ClassVar[str] = ".6f"
 
-    def evaluate(self, data: EvaluatorInput) -> EvaluationResult:
-        case = data.case
+    def _measure(self, case: EvaluationCase) -> float:
         if case.cost_usd is None:
             raise EvaluationError("cost requires 'cost_usd'")
-
-        threshold = require_number(data.config, "max_cost_usd")
-        cost = case.cost_usd
-        passed = cost <= threshold
-        return EvaluationResult(
-            evaluator_name=self.name,
-            score=round(ratio_score(threshold, cost), 4),
-            passed=passed,
-            details={
-                "cost_usd": f"{cost:.6f}",
-                "max_cost_usd": f"{threshold:.6f}",
-            },
-        )
+        return case.cost_usd

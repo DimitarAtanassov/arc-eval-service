@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import ClassVar
+from typing import ClassVar, overload
 
 from arc_eval_service.core.errors import EvaluationError
 from arc_eval_service.schemas.models import (
@@ -95,7 +95,7 @@ def optional_bool(
     return value
 
 
-def optional_str(config: Mapping[str, ConfigValue], key: str, default: str) -> str:
+def optional_str(config: Mapping[str, ConfigValue], key: str, *, default: str) -> str:
     """Return an optional string config value or ``default``."""
     if key not in config:
         return default
@@ -105,10 +105,22 @@ def optional_str(config: Mapping[str, ConfigValue], key: str, default: str) -> s
     return value
 
 
+@overload
 def optional_number(
-    config: Mapping[str, ConfigValue], key: str, default: float | None
+    config: Mapping[str, ConfigValue], key: str, *, default: float
+) -> float: ...
+@overload
+def optional_number(
+    config: Mapping[str, ConfigValue], key: str, *, default: None
+) -> float | None: ...
+def optional_number(
+    config: Mapping[str, ConfigValue], key: str, *, default: float | None
 ) -> float | None:
-    """Return an optional numeric config value or ``default``."""
+    """Return an optional numeric config value or ``default``.
+
+    Typed via overloads so a non-``None`` default narrows the result to ``float``,
+    sparing callers a redundant ``None`` check.
+    """
     if key not in config:
         return default
     value = config[key]

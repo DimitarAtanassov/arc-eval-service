@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import ClassVar
 
 from arc_eval_service.core.errors import EvaluationError
-from arc_eval_service.evaluators.base import Evaluator, ratio_score, require_number
-from arc_eval_service.schemas.models import EvaluationResult, EvaluatorInput
+from arc_eval_service.evaluators.budget import BudgetEvaluator
+from arc_eval_service.schemas.models import EvaluationCase
 
 
-class TokenEvaluator(Evaluator):
+class TokenEvaluator(BudgetEvaluator):
     """Pass when total tokens are within ``max_total_tokens``.
 
     Total tokens = ``prompt_tokens`` + ``completion_tokens`` (each defaults to 0,
@@ -21,23 +21,14 @@ class TokenEvaluator(Evaluator):
 
     name: ClassVar[str] = "token"
     description: ClassVar[str] = "Total token usage must stay within a budget."
+    config_key: ClassVar[str] = "max_total_tokens"
+    value_label: ClassVar[str] = "total_tokens"
+    limit_label: ClassVar[str] = "max_total_tokens"
+    value_format: ClassVar[str] = ".0f"
 
-    def evaluate(self, data: EvaluatorInput) -> EvaluationResult:
-        case = data.case
+    def _measure(self, case: EvaluationCase) -> float:
         if case.prompt_tokens is None and case.completion_tokens is None:
             raise EvaluationError(
                 "token requires 'prompt_tokens' and/or 'completion_tokens'"
             )
-
-        threshold = require_number(data.config, "max_total_tokens")
-        total = (case.prompt_tokens or 0) + (case.completion_tokens or 0)
-        passed = total <= threshold
-        return EvaluationResult(
-            evaluator_name=self.name,
-            score=round(ratio_score(threshold, total), 4),
-            passed=passed,
-            details={
-                "total_tokens": str(total),
-                "max_total_tokens": f"{threshold:.0f}",
-            },
-        )
+        return float((case.prompt_tokens or 0) + (case.completion_tokens or 0))

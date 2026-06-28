@@ -44,8 +44,7 @@ class HeuristicEvaluator(Evaluator):
 
         passed_count = sum(1 for ok in checks.values() if ok)
         score = clamp01(passed_count / len(checks)) if checks else 0.0
-        threshold = optional_number(data.config, "pass_threshold", 1.0)
-        assert threshold is not None  # noqa: S101 - default makes None impossible
+        threshold = optional_number(data.config, "pass_threshold", default=1.0)
 
         details = {name: str(ok).lower() for name, ok in checks.items()}
         details["score_fraction"] = f"{passed_count}/{len(checks)}"
@@ -57,14 +56,13 @@ class HeuristicEvaluator(Evaluator):
         )
 
     def _run_checks(self, output: str, data: EvaluatorInput) -> dict[str, bool]:
-        min_length = optional_number(data.config, "min_length", 1.0)
-        max_length = optional_number(data.config, "max_length", None)
+        min_length = optional_number(data.config, "min_length", default=1.0)
+        max_length = optional_number(data.config, "max_length", default=None)
         forbid_refusal = optional_bool(data.config, "forbid_refusal", default=False)
-        banned = optional_str(data.config, "banned_substring", "")
+        banned = optional_str(data.config, "banned_substring", default="")
 
         checks: dict[str, bool] = {}
-        if min_length is not None:
-            checks["min_length"] = len(output) >= int(min_length)
+        checks["min_length"] = len(output) >= int(min_length)
         if max_length is not None:
             checks["max_length"] = len(output) <= int(max_length)
         if forbid_refusal:
