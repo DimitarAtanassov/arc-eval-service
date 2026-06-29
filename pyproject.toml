@@ -43,11 +43,13 @@ name = "pypi"
 url = "https://pypi.org/simple"
 default = true
 
-# arc-telemetry is the shared observability SDK. For local polyrepo development
-# it resolves from the sibling checkout; CI/independent builds override this
-# source. See arc-docs running-the-stack.md.
+# arc-telemetry is the shared observability SDK, published as a standalone
+# public repo. We resolve it from Git so CI, Docker, and fresh clones all build
+# without a sibling checkout. For local cross-repo development against a live
+# editable checkout, override this source in a personal uv.toml. See arc-docs
+# running-the-stack.md.
 [tool.uv.sources]
-arc-telemetry = { path = "../arc-telemetry", editable = true }
+arc-telemetry = { git = "https://github.com/DimitarAtanassov/arc-telemetry.git", branch = "main" }
 
 [dependency-groups]
 dev = [
