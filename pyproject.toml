@@ -35,6 +35,12 @@ members = ["apps/*", "packages/*"]
 native-tls = true
 default-groups = ["dev", "lint"]
 
+# Resolve from public PyPI only; do not inherit any machine-global private index.
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
 [dependency-groups]
 dev = [
     "pytest>=8.4.0",

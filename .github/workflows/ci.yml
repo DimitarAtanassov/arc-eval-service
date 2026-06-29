@@ -5,12 +5,22 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel superseded runs on the same ref to save runner minutes.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege: jobs only read the repo. Writers (release, code scanning)
+# live in their own workflows with scoped permissions.
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.13"
+
 jobs:
   lint:
+    name: lint + types
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,12 +28,12 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: Set up Python
-        run: uv python install 3.13
-      - name: Lint (ruff format, ruff check, mypy, lockfile)
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Ruff format, ruff check, mypy, lockfile
         run: make lint
 
   test:
+    name: tests + coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,13 +41,15 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: Set up Python
-        run: uv python install 3.13
-      - name: Test with coverage (fails under 80%)
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Run suite (unit + integration + e2e, fail under 80%)
         run: make test
-      - name: Export coverage XML
+      - name: Coverage XML
         if: always()
         run: uv run coverage xml
+      - name: Job summary
+        if: always()
+        run: uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -45,3 +57,87 @@ jobs:
           name: coverage-xml
           path: coverage.xml
           if-no-files-found: ignore
+
+  migrations:
+    name: migration roundtrip
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: arc
+          POSTGRES_PASSWORD: arc
+          POSTGRES_DB: arc_eval
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U arc"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ARC_EVAL_DATABASE_URL: postgresql+psycopg://arc:arc@localhost:5432/arc_eval
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Upgrade + downgrade + upgrade (proves both directions)
+        run: make migrate-check
+
+  docker:
+    name: image build + smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: arc-eval-service:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test /health
+        run: |
+          docker run -d --name arc -p 8000:8000 arc-eval-service:ci
+          for _ in $(seq 1 30); do
+            curl -fsS localhost:8000/health && break || sleep 1
+          done
+          curl -fsS localhost:8000/health | grep -q '"status":"ok"'
+          docker rm -f arc
+
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: pip-audit (known CVEs)
+        run: make audit
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Single required status check: branch protection points here only.
+  ci-ok:
+    name: ci
+    needs: [lint, test, migrations, docker, audit, secrets]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Fail if any upstream job failed
+        run: '[ "${{ contains(needs.*.result, ''failure'') }}" = "false" ] || exit 1'
