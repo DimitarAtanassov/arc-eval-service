@@ -1,9 +1,12 @@
 # Service — arc-evaluator
 
-**Role:** measure response quality. **Online** (inline, best-effort) on the hot
-path, and **offline** on traces the OTel Collector fans out to it. Both modes
-share the same evaluators and write results to the **evaluation database**. The
-online/offline split is [ADR-0008](../adr/0008-online-offline-evaluation.md).
+**Role:** measure response quality, and own the span/trace store. **Online**
+(inline, best-effort) on the hot path, and **offline** on spans the OTel
+Collector fans out to it. Both modes share the same evaluators and write results
+to the **evaluation database**. The same OTLP ingest persists every span it
+receives, so the evaluator serves the real span tree to `arc-platform`
+([ADR-0006](../adr/0006-postgres-span-store.md)). The online/offline split is
+[ADR-0008](../adr/0008-online-offline-evaluation.md).
 
 For Phase 1: **LLM-as-a-judge only** — no heuristic or deterministic metrics. A
 fast judge runs online; heavier judges run offline. Judge models come from the
@@ -15,7 +18,9 @@ fit cost, latency and availability.
 ## API
 
 ```
-POST /v1/evaluate    # score a completed request, inline
+POST /v1/evaluate            # score a completed interaction, inline
+POST /v1/otlp/traces         # OTLP/HTTP ingest from the collector (gzip-aware)
+GET  /v1/traces/{trace_id}   # the real span tree for one trace
 GET  /health
 ```
 
@@ -61,6 +66,36 @@ arc_evaluator/
 
 Scores are emitted as `arc.eval.*` span attributes and persisted to the
 **evaluation database** for query by `arc-platform`.
+
+---
+
+## Span store + OTLP ingest
+
+The evaluator also owns the **span/trace store** ([ADR-0006](../adr/0006-postgres-span-store.md)).
+The Collector fans every span to `POST /v1/otlp/traces` as OTLP/HTTP JSON; the
+evaluator normalises and upserts each span (idempotent on `span_id`) and serves
+the real span tree at `GET /v1/traces/{trace_id}` so `arc-platform` renders the
+actual `arc.llm.*` (inference) and `arc.eval.*` (evaluation) attributes instead
+of a waterfall reconstructed from latencies.
+
+```mermaid
+flowchart LR
+    COL["OTel Collector"] -->|gzip OTLP/JSON| ING["POST /v1/otlp/traces"]
+    ING --> STORE[("span store")]
+    ING -->|inbound inference spans only| JUDGE["offline judging"]
+    PLAT["arc-platform"] -->|GET /v1/traces/id| STORE
+```
+
+Two rules keep ingest spec-conformant and loop-free:
+
+- **gzip-aware receiver.** OTLP/HTTP exporters compress request bodies by
+  default; an ASGI middleware decompresses them so ingest does not `400` on a
+  gzipped batch.
+- **No feedback loop.** The evaluator stores every span but offline-judges only
+  spans from *other* services (it skips spans whose resource `service.name` is
+  the evaluator), and its `/v1/otlp/traces` path is excluded from
+  self-instrumentation. Otherwise judging its own judge calls (which are
+  `arc.llm.call` spans) would feed the Collector and re-ingest without end.
 
 ---
 

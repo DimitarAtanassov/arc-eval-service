@@ -10,9 +10,10 @@ from arc_telemetry import instrument_fastapi, setup_tracing
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from arc_eval_service.api.middleware import GzipRequestMiddleware
 from arc_eval_service.api.routes import router
 from arc_eval_service.core.config import get_settings
-from arc_eval_service.core.deps import get_store
+from arc_eval_service.core.deps import get_span_store, get_store
 from arc_eval_service.core.errors import (
     EvaluationError,
     NotFoundError,
@@ -29,6 +30,7 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Release store-held resources (e.g. the Postgres pool) on shutdown."""
     yield
     await get_store().dispose()
+    await get_span_store().dispose()
 
 
 def create_app() -> FastAPI:
@@ -68,7 +70,12 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     app.include_router(router)
-    instrument_fastapi(app, excluded_urls="health")
+    # Decompress gzip request bodies (OTLP/HTTP exporters compress by default).
+    app.add_middleware(GzipRequestMiddleware)
+    # Exclude the OTLP ingest path from self-instrumentation: tracing the
+    # trace-ingestion endpoint would emit a server span per ingest, which the
+    # collector fans back here, ingesting again — an unbounded feedback loop.
+    instrument_fastapi(app, excluded_urls="health,v1/otlp/traces")
     return app
 
 

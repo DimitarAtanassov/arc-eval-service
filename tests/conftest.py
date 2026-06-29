@@ -74,10 +74,17 @@ def stub_service(*, text: str = GOOD_VERDICT, fail: bool = False) -> EvaluationS
 @pytest.fixture(autouse=True)
 def reset_state() -> Iterator[None]:
     """Clear cached singletons so each test starts fresh."""
-    for cache in (deps.get_store, deps.get_judges, deps.get_models, get_settings):
+    caches = (
+        deps.get_store,
+        deps.get_span_store,
+        deps.get_judges,
+        deps.get_models,
+        get_settings,
+    )
+    for cache in caches:
         cache.cache_clear()
     yield
-    for cache in (deps.get_store, deps.get_judges, deps.get_models, get_settings):
+    for cache in caches:
         cache.cache_clear()
 
 
@@ -88,7 +95,11 @@ async def client() -> AsyncIterator[AsyncClient]:
     app.dependency_overrides[deps.get_evaluation_service] = stub_service
     app.dependency_overrides[deps.get_offline_ingest_service] = lambda: (
         OfflineIngestService(
-            evaluation=stub_service(), default_judge="safety", default_model="default"
+            evaluation=stub_service(),
+            spans=deps.get_span_store(),
+            self_service_name="arc-eval-service",
+            default_judge="safety",
+            default_model="default",
         )
     )
     transport = ASGITransport(app=app)

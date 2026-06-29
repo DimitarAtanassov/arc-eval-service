@@ -14,9 +14,15 @@ from arc_eval_service.ingest.otlp import OfflineIngestService
 from arc_eval_service.judges.registry import JudgeRegistry, default_registry
 from arc_eval_service.models.profiles import ModelRegistry
 from arc_eval_service.services.evaluation import EvaluationService
+from arc_eval_service.services.traces import TraceService
 from arc_eval_service.storage.base import EvaluationStore
 from arc_eval_service.storage.memory import InMemoryEvaluationStore
 from arc_eval_service.storage.postgres import PostgresEvaluationStore
+from arc_eval_service.storage.spans import (
+    InMemorySpanStore,
+    PostgresSpanStore,
+    SpanStore,
+)
 
 
 @lru_cache(maxsize=1)
@@ -30,6 +36,18 @@ def get_store() -> EvaluationStore:
     if settings.database_url:
         return PostgresEvaluationStore(settings.database_url)
     return InMemoryEvaluationStore()
+
+
+@lru_cache(maxsize=1)
+def get_span_store() -> SpanStore:
+    """Return the process-wide span (trace) store.
+
+    Mirrors :func:`get_store`: Postgres when configured, in-memory otherwise.
+    """
+    settings = get_settings()
+    if settings.database_url:
+        return PostgresSpanStore(settings.database_url)
+    return InMemorySpanStore()
 
 
 @lru_cache(maxsize=1)
@@ -52,11 +70,18 @@ def get_evaluation_service() -> EvaluationService:
     )
 
 
+def get_trace_service() -> TraceService:
+    """Return a :class:`TraceService` wired to the span store."""
+    return TraceService(spans=get_span_store())
+
+
 def get_offline_ingest_service() -> OfflineIngestService:
     """Return the OTel offline-ingestion service (gateway -> collector -> here)."""
     settings = get_settings()
     return OfflineIngestService(
         evaluation=get_evaluation_service(),
+        spans=get_span_store(),
+        self_service_name=settings.service_name,
         default_judge=settings.default_judge,
         default_model=settings.default_model,
     )

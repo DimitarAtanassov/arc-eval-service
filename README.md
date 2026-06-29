@@ -90,7 +90,8 @@ A request picks a profile by name (and may override the model id):
 | POST | `/v1/evaluations/{id}/rerun` | re-judge a stored case (optionally new judges/models) |
 | GET  | `/v1/judges` | list judges + what each requires |
 | GET  | `/v1/models` | list configured model profiles (no secrets) |
-| POST | `/v1/otlp/traces` | offline ingest: OTLP/HTTP JSON from the collector |
+| POST | `/v1/otlp/traces` | OTLP/HTTP ingest from the collector (gzip-aware): store spans + offline-judge |
+| GET  | `/v1/traces/{trace_id}` | real span tree for a trace (span store) |
 
 ### Example
 
@@ -107,14 +108,25 @@ curl -s localhost:8000/v1/evaluate -H 'content-type: application/json' -d '{
 }'
 ```
 
-## Offline evaluation via OpenTelemetry
+## Offline evaluation + span store via OpenTelemetry
 
 The gateway emits content-bearing `arc.llm.call` spans (under
-`ARC_OTEL_CAPTURE_CONTENT=true`); the collector fans traces out to
-`POST /v1/otlp/traces`; the evaluator maps each span to a case and judges it with
-`ARC_EVAL_DEFAULT_JUDGE` on `ARC_EVAL_DEFAULT_MODEL`. The span→case mapping is a
-pure function (`ingest/otlp.py`). PII note: capturing prompt+completion is
-**opt-in**.
+`ARC_OTEL_CAPTURE_CONTENT=true`); the collector fans every span to
+`POST /v1/otlp/traces` as gzip OTLP/JSON. The evaluator does two things with the
+batch:
+
+- **Span store (ADR-0006):** it normalises and upserts every span (idempotent on
+  `span_id`) and serves the real span tree at `GET /v1/traces/{trace_id}` for
+  `arc-platform`. The store holds both inference (`arc.llm.*`) and evaluation
+  (`arc.eval.*`) spans.
+- **Offline judging:** it maps inbound `arc.llm.call` spans to cases and judges
+  them with `ARC_EVAL_DEFAULT_JUDGE` on `ARC_EVAL_DEFAULT_MODEL`. Spans from the
+  evaluator itself are stored but **not** re-judged (its own judge calls are
+  `arc.llm.call` spans too), which breaks the collector feedback loop. The
+  span→case mapping is a pure function (`ingest/otlp.py`).
+
+A gzip-decoding middleware makes the endpoint a spec-conformant OTLP/HTTP
+receiver. PII note: capturing prompt+completion is **opt-in**.
 
 ## Re-running on stored data
 
@@ -142,6 +154,8 @@ curl -s -X POST localhost:8000/v1/evaluations/$ID/rerun -H 'content-type: applic
 
 In-memory by default (nothing to run). Set `ARC_EVAL_DATABASE_URL` for Postgres
 (async SQLAlchemy + psycopg3); schema is managed by Alembic (`make migrate`).
+Two tables: `evaluations` (one row per judge result) and `spans` (the ingested
+span store, keyed on `span_id`).
 
 ## Running & quality gate
 

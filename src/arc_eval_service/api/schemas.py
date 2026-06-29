@@ -41,6 +41,7 @@ class IngestResponse(BaseModel):
     """Acknowledgement for an accepted OTLP traces batch."""
 
     accepted: int = Field(ge=0, description="Number of evaluable interactions queued.")
+    spans: int = Field(default=0, ge=0, description="Number of spans persisted.")
 
 
 class HealthResponse(BaseModel):

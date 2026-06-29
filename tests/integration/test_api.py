@@ -1,5 +1,8 @@
 """Integration tests for the HTTP API via httpx AsyncClient (stub judge model)."""
 
+import gzip
+import json
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -131,6 +134,104 @@ async def test_otlp_ingest_accepts_and_counts(client: AsyncClient) -> None:
     response = await client.post("/v1/otlp/traces", json=payload)
     assert response.status_code == 202
     assert response.json()["accepted"] == 1
+
+
+async def test_otlp_ingest_accepts_gzip_encoded_body(client: AsyncClient) -> None:
+    # The collector's otlphttp exporter gzip-compresses by default; the receiver
+    # must decode it (without the middleware this returns 400).
+    payload = {
+        "resourceSpans": [
+            {
+                "scopeSpans": [
+                    {
+                        "spans": [
+                            {
+                                "name": "arc.llm.call",
+                                "traceId": "gz-trace",
+                                "events": [
+                                    {
+                                        "name": "arc.llm.choice",
+                                        "attributes": [
+                                            {
+                                                "key": "arc.llm.message.content",
+                                                "value": {"stringValue": "hi"},
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    body = gzip.compress(json.dumps(payload).encode())
+    response = await client.post(
+        "/v1/otlp/traces",
+        content=body,
+        headers={"content-type": "application/json", "content-encoding": "gzip"},
+    )
+    assert response.status_code == 202
+    assert response.json()["accepted"] == 1
+
+
+async def test_otlp_ingest_stores_spans_and_serves_real_trace(
+    client: AsyncClient,
+) -> None:
+    payload = {
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [
+                        {"key": "service.name", "value": {"stringValue": "arc-gateway"}}
+                    ]
+                },
+                "scopeSpans": [
+                    {
+                        "spans": [
+                            {
+                                "name": "arc.llm.call",
+                                "traceId": "trace-real",
+                                "spanId": "span-root",
+                                "startTimeUnixNano": "1000000000",
+                                "endTimeUnixNano": "1500000000",
+                                "attributes": [
+                                    {
+                                        "key": "arc.llm.request.model",
+                                        "value": {"stringValue": "gpt-4o"},
+                                    },
+                                    {
+                                        "key": "arc.llm.usage.input_tokens",
+                                        "value": {"intValue": "42"},
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+    ingest = await client.post("/v1/otlp/traces", json=payload)
+    assert ingest.status_code == 202
+    assert ingest.json()["spans"] == 1
+
+    trace = await client.get("/v1/traces/trace-real")
+    assert trace.status_code == 200
+    body = trace.json()
+    assert body["trace_id"] == "trace-real"
+    span = body["spans"][0]
+    assert span["span_id"] == "span-root"
+    assert span["parent_span_id"] is None
+    assert span["duration_ms"] == 500.0
+    # the real arc.llm.* attributes are surfaced for inspection
+    assert span["attributes"]["arc.llm.request.model"] == "gpt-4o"
+    assert span["attributes"]["arc.llm.usage.input_tokens"] == "42"
+
+
+async def test_get_unknown_trace_is_404(client: AsyncClient) -> None:
+    assert (await client.get("/v1/traces/missing-trace")).status_code == 404
 
 
 async def test_get_unknown_evaluation_is_404(client: AsyncClient) -> None:

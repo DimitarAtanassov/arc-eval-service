@@ -29,6 +29,7 @@ from arc_eval_service.core.config import Settings, get_settings
 from arc_eval_service.core.deps import (
     get_evaluation_service,
     get_offline_ingest_service,
+    get_trace_service,
 )
 from arc_eval_service.ingest.otlp import OfflineIngestService, OTLPTracePayload
 from arc_eval_service.schemas.models import (
@@ -36,13 +37,16 @@ from arc_eval_service.schemas.models import (
     ExecutionMode,
     JudgeInfo,
     ModelProfileInfo,
+    Trace,
 )
 from arc_eval_service.services.evaluation import EvaluationService
+from arc_eval_service.services.traces import TraceService
 
 router = APIRouter()
 
 ServiceDep = Annotated[EvaluationService, Depends(get_evaluation_service)]
 IngestDep = Annotated[OfflineIngestService, Depends(get_offline_ingest_service)]
+TraceDep = Annotated[TraceService, Depends(get_trace_service)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
@@ -143,12 +147,19 @@ async def ingest_traces(
     settings: SettingsDep,
     background: BackgroundTasks,
 ) -> IngestResponse:
-    """Accept an OTLP traces batch (from the collector) for offline judging."""
+    """Accept an OTLP traces batch (from the collector): store spans, judge cases."""
     if not settings.ingest_enabled:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="offline ingestion is disabled",
         )
-    cases = ingest.extract(payload)
+    spans, cases = ingest.parse(payload)
+    await ingest.store(spans)
     background.add_task(ingest.run, cases)
-    return IngestResponse(accepted=len(cases))
+    return IngestResponse(accepted=len(cases), spans=len(spans))
+
+
+@router.get("/v1/traces/{trace_id}", response_model=Trace, tags=["traces"])
+async def get_trace(trace_id: str, service: TraceDep) -> Trace:
+    """Return the full span tree for a trace from the span store."""
+    return await service.get_trace(trace_id)

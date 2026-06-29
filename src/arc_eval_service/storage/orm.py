@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, String
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -38,4 +38,28 @@ class EvaluationRow(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class SpanRow(Base):
+    """Row representation of one normalised OTel span (:class:`SpanRecord`).
+
+    Keyed on ``span_id`` so ingest is an idempotent upsert: the collector may
+    redeliver a span, and children may arrive before parents, without corrupting
+    the tree. ``trace_id`` is indexed because reads fetch a whole trace at once.
+    """
+
+    __tablename__ = "spans"
+
+    span_id: Mapped[str] = mapped_column(String, primary_key=True)
+    trace_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    parent_span_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    service_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    kind: Mapped[str | None] = mapped_column(String, nullable=True)
+    start_unix_nano: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    end_unix_nano: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    attributes: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )
