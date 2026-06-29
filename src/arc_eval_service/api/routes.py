@@ -76,7 +76,9 @@ async def evaluate_batch(
     return await service.batch(request.items)
 
 
-@router.get("/v1/evaluations", response_model=list[EvaluationRecord], tags=["evaluations"])
+@router.get(
+    "/v1/evaluations", response_model=list[EvaluationRecord], tags=["evaluations"]
+)
 async def list_evaluations(
     service: ServiceDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,

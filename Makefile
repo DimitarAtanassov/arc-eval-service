@@ -53,6 +53,17 @@ test-e2e: prepare
 .PHONY: check ## Run lint and the full test suite (CI gate)
 check: lint test
 
+.PHONY: audit ## Scan resolved dependencies for known CVEs
+audit: prepare
+	uv export --frozen --no-emit-project --all-groups --no-hashes --format requirements-txt > requirements.audit.txt
+	uvx pip-audit --no-deps -r requirements.audit.txt; ec=$$?; rm -f requirements.audit.txt; exit $$ec
+
+.PHONY: migrate-check ## Apply migrations then roll back (validates up + down; needs ARC_EVAL_DATABASE_URL)
+migrate-check: prepare
+	uv run alembic upgrade head
+	uv run alembic downgrade base
+	uv run alembic upgrade head
+
 .PHONY: migrate ## Apply database migrations to head (needs ARC_EVAL_DATABASE_URL)
 migrate: prepare
 	uv run alembic upgrade head
