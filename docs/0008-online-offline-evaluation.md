@@ -11,14 +11,13 @@ path. Conflating them produces either slow requests or shallow evaluation.
 ## Decision
 Two distinct modes:
 
-- **Online evaluation** — runs inside the request, in the evaluator service.
-  Strictly **heuristic, deterministic, in-memory, sub-100ms** (length, refusal
-  detection, latency). It is **best-effort**: if it errors or times out, the
-  request still returns (degrade). Scores are emitted as `arc.eval.*` span
-  attributes.
-- **Offline evaluation** — runs **asynchronously off the span store**, reading
-  the Silver layer. This is where heavier evaluators and (later) judge models
-  live. It is **deferred to Phase 2+** (YAGNI for the MVP).
+- **Online evaluation** — runs inside the request, in the evaluator service. A
+  single **fast LLM judge** call, capped by a tight timeout. It is **best-effort**:
+  if it errors or times out, the request still returns (degrade). Scores are
+  emitted as `arc.eval.*` span attributes.
+- **Offline evaluation** — runs **asynchronously on traces the Collector fans
+  out to the evaluator**, with results stored in the evaluation DB. This is where
+  heavier evaluators and (later) judge models live.
 
 ## Consequences
 - The hot path stays fast and predictable; evaluation never fails a request.
