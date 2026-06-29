@@ -17,6 +17,8 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.36",
     "psycopg[binary]>=3.2.0",
     "alembic>=1.13.0",
+    "httpx>=0.27.0",
+    "arc-telemetry",
 ]
 
 [build-system]
@@ -40,6 +42,12 @@ default-groups = ["dev", "lint"]
 name = "pypi"
 url = "https://pypi.org/simple"
 default = true
+
+# arc-telemetry is the shared observability SDK. For local polyrepo development
+# it resolves from the sibling checkout; CI/independent builds override this
+# source. See arc-docs running-the-stack.md.
+[tool.uv.sources]
+arc-telemetry = { path = "../arc-telemetry", editable = true }
 
 [dependency-groups]
 dev = [
@@ -76,6 +84,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 env = [
     "ARC_EVAL_LOG_LEVEL=WARNING",
+    "ARC_OTEL_ENABLE_OTLP=false",
 ]
 markers = [
     "unit: fast tests with no external dependencies",

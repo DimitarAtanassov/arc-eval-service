@@ -1,9 +1,13 @@
 """Local Pydantic domain models.
 
 These describe the evaluation domain: the interaction under test
-(:class:`EvaluationCase`), the evaluators to run (:class:`EvaluatorSpec`), the
-per-evaluator outcome (:class:`EvaluationResult`) and the persisted aggregate
+(:class:`EvaluationCase`), the judges to run against it (:class:`JudgeSpec`), the
+per-judge outcome (:class:`EvaluationResult`) and the persisted aggregate
 (:class:`EvaluationRecord`).
+
+The evaluator runs **LLM-as-a-judge only**: every score comes from a judge
+(a prompt + parser) executed on a configured model. Judges and models are
+orthogonal — any judge runs on any model profile.
 """
 
 from __future__ import annotations
@@ -13,8 +17,9 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-# Evaluator config values are intentionally scalar: this keeps configs JSON-safe,
-# strictly typed (no ``Any``) and trivially validated by the evaluator helpers.
+# Judge config values are intentionally scalar: this keeps configs JSON-safe,
+# strictly typed (no ``Any``) and trivially validated. Multi-line prompts for the
+# custom judge are still plain strings.
 type ConfigValue = str | int | float | bool
 
 
@@ -35,61 +40,74 @@ class EvaluationStatus(StrEnum):
 
 
 class EvaluationCase(BaseModel):
-    """A single AI interaction to be evaluated.
+    """A single AI interaction to be judged.
 
-    All signal fields are optional; each evaluator declares (by raising
-    :class:`~arc_eval_service.core.errors.EvaluationError`) which fields it
-    requires.
+    ``input`` is the user prompt/question, ``context`` the retrieved passages a
+    grounded judge checks against, ``output`` the model's answer. Each judge
+    declares which of these it ``requires``; the orchestrator validates presence
+    before calling a model.
     """
 
     request_id: str = Field(..., min_length=1, description="Originating request id.")
+    input: str | None = Field(default=None, description="User prompt / question.")
     output: str | None = Field(default=None, description="Model response text.")
+    context: list[str] | None = Field(
+        default=None, description="Retrieved context passages for grounded judges."
+    )
     reference: str | None = Field(default=None, description="Expected/reference text.")
-    latency_ms: float | None = Field(default=None, ge=0)
-    prompt_tokens: int | None = Field(default=None, ge=0)
-    completion_tokens: int | None = Field(default=None, ge=0)
-    cost_usd: float | None = Field(default=None, ge=0)
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
-class EvaluatorSpec(BaseModel):
-    """Names an evaluator from the registry plus its per-call configuration."""
+class JudgeSpec(BaseModel):
+    """Names a judge from the registry, the model profile to run it on, and config.
 
-    name: str = Field(..., min_length=1, description="Registry key, e.g. 'regex'.")
+    ``model`` is a server-side model *profile* name (credentials resolved at
+    boot); ``model_override`` optionally swaps the concrete model id within that
+    profile. ``config`` carries per-judge knobs (e.g. the custom judge's rubric).
+    """
+
+    judge: str = Field(..., min_length=1, description="Judge registry key.")
+    model: str | None = Field(
+        default=None, description="Model profile name; default profile when omitted."
+    )
+    model_override: str | None = Field(
+        default=None, description="Override the model id within the profile."
+    )
     config: dict[str, ConfigValue] = Field(default_factory=dict)
 
 
 class EvaluationRequest(BaseModel):
-    """A case plus the evaluators to run against it."""
+    """A case plus the judges to run against it."""
 
     case: EvaluationCase
-    evaluators: list[EvaluatorSpec] = Field(..., min_length=1)
-
-
-class EvaluatorInput(BaseModel):
-    """The argument passed to ``Evaluator.evaluate``."""
-
-    case: EvaluationCase
-    config: dict[str, ConfigValue] = Field(default_factory=dict)
+    judges: list[JudgeSpec] = Field(..., min_length=1)
 
 
 class EvaluationResult(BaseModel):
-    """Outcome of running one evaluator against one case.
+    """Outcome of running one judge against one case.
 
-    ``latency_ms`` is measured by the orchestrator (not the evaluator) and
-    overwritten after the call returns.
+    ``latency_ms`` is measured by the orchestrator. ``label`` and ``explanation``
+    are the judge's verdict and rationale; ``model`` records which model id served
+    the judgement (provenance for re-runs and audit).
     """
 
-    evaluator_name: str
+    judge: str
+    model: str | None = None
     score: float = Field(..., ge=0.0, le=1.0)
     passed: bool
+    label: str | None = None
+    explanation: str | None = None
     latency_ms: float = Field(default=0.0, ge=0.0)
-    details: dict[str, str] = Field(default_factory=dict)
     error: str | None = None
 
 
 class EvaluationRecord(BaseModel):
-    """Persisted aggregate of an evaluation request across all its evaluators."""
+    """Persisted aggregate of an evaluation request across all its judges.
+
+    ``case`` echoes the interaction that was judged, making the record
+    self-describing and re-runnable. ``specs`` records the judges/models used;
+    ``rerun_of`` links a re-run back to its parent evaluation.
+    """
 
     evaluation_id: str
     request_id: str
@@ -100,10 +118,23 @@ class EvaluationRecord(BaseModel):
     passed: bool | None = None
     created_at: datetime
     completed_at: datetime | None = None
+    case: EvaluationCase | None = None
+    specs: list[JudgeSpec] = Field(default_factory=list)
+    rerun_of: str | None = None
 
 
-class EvaluatorInfo(BaseModel):
-    """Discovery metadata for a registered evaluator."""
+class JudgeInfo(BaseModel):
+    """Discovery metadata for a registered judge."""
 
     name: str
     description: str
+    requires: list[str]
+
+
+class ModelProfileInfo(BaseModel):
+    """Discovery metadata for a configured model profile (no secrets)."""
+
+    name: str
+    provider: str
+    model: str
+    base_url: str | None = None

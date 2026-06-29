@@ -6,15 +6,20 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from arc_telemetry import instrument_fastapi, setup_tracing
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from arc_eval_service.api.routes import router
 from arc_eval_service.core.config import get_settings
 from arc_eval_service.core.deps import get_store
-from arc_eval_service.core.errors import NotFoundError, UnknownEvaluatorError
+from arc_eval_service.core.errors import (
+    EvaluationError,
+    NotFoundError,
+    UnknownJudgeError,
+    UnknownModelError,
+)
 from arc_eval_service.core.logging import configure_logging
-from arc_eval_service.observability.tracing import setup_tracing
 
 logger = logging.getLogger("arc_eval_service.api")
 
@@ -47,14 +52,23 @@ def create_app() -> FastAPI:
         )
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
-    @app.exception_handler(UnknownEvaluatorError)
-    async def _unknown_evaluator_handler(
-        _request: Request, exc: UnknownEvaluatorError
+    @app.exception_handler(UnknownJudgeError)
+    @app.exception_handler(UnknownModelError)
+    async def _unknown_ref_handler(
+        _request: Request, exc: UnknownJudgeError | UnknownModelError
     ) -> JSONResponse:
-        logger.info("unknown evaluator", extra={"evaluator_name": exc.name})
+        logger.info("unknown reference", extra={"name": exc.name})
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.exception_handler(EvaluationError)
+    async def _evaluation_error_handler(
+        _request: Request, exc: EvaluationError
+    ) -> JSONResponse:
+        logger.info("evaluation rejected", extra={"detail": str(exc)})
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     app.include_router(router)
+    instrument_fastapi(app, excluded_urls="health")
     return app
 
 

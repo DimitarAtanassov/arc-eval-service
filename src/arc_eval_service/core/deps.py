@@ -1,8 +1,8 @@
 """Dependency injection wiring.
 
 The api/ layer depends on these factories rather than constructing the store,
-registry or service directly. This keeps layering (api -> services -> storage)
-one-directional and the persistence backend swappable behind ``get_store``.
+registries or service directly. This keeps layering (api -> services ->
+{judges, models, storage}) one-directional and every collaborator swappable.
 """
 
 from __future__ import annotations
@@ -10,7 +10,9 @@ from __future__ import annotations
 from functools import lru_cache
 
 from arc_eval_service.core.config import get_settings
-from arc_eval_service.evaluators.registry import EvaluatorRegistry, default_registry
+from arc_eval_service.ingest.otlp import OfflineIngestService
+from arc_eval_service.judges.registry import JudgeRegistry, default_registry
+from arc_eval_service.models.profiles import ModelRegistry
 from arc_eval_service.services.evaluation import EvaluationService
 from arc_eval_service.storage.base import EvaluationStore
 from arc_eval_service.storage.memory import InMemoryEvaluationStore
@@ -31,11 +33,30 @@ def get_store() -> EvaluationStore:
 
 
 @lru_cache(maxsize=1)
-def get_registry() -> EvaluatorRegistry:
-    """Return the process-wide evaluator registry."""
+def get_judges() -> JudgeRegistry:
+    """Return the process-wide judge registry."""
     return default_registry()
 
 
+@lru_cache(maxsize=1)
+def get_models() -> ModelRegistry:
+    """Return the process-wide model registry built from configured profiles."""
+    settings = get_settings()
+    return ModelRegistry(settings.model_profiles, default=settings.default_model)
+
+
 def get_evaluation_service() -> EvaluationService:
-    """Return an :class:`EvaluationService` wired to the active store + registry."""
-    return EvaluationService(store=get_store(), registry=get_registry())
+    """Return an :class:`EvaluationService` wired to its collaborators."""
+    return EvaluationService(
+        store=get_store(), judges=get_judges(), models=get_models()
+    )
+
+
+def get_offline_ingest_service() -> OfflineIngestService:
+    """Return the OTel offline-ingestion service (gateway -> collector -> here)."""
+    settings = get_settings()
+    return OfflineIngestService(
+        evaluation=get_evaluation_service(),
+        default_judge=settings.default_judge,
+        default_model=settings.default_model,
+    )

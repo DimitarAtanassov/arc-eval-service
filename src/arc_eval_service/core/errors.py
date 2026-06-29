@@ -1,6 +1,6 @@
 """Domain errors.
 
-Services and evaluators raise these instead of importing FastAPI; the api/ layer
+Services and judges raise these instead of importing FastAPI; the api/ layer
 maps them to HTTP responses. This keeps HTTP concerns out of the lower layers.
 """
 
@@ -16,18 +16,34 @@ class NotFoundError(Exception):
         super().__init__(f"{resource} '{identifier}' not found")
 
 
-class UnknownEvaluatorError(ValueError):
-    """Raised when a request references an evaluator that is not registered."""
+class UnknownJudgeError(ValueError):
+    """Raised when a request references a judge that is not registered."""
 
     def __init__(self, name: str) -> None:
         self.name = name
-        super().__init__(f"unknown evaluator '{name}'")
+        super().__init__(f"unknown judge '{name}'")
+
+
+class UnknownModelError(ValueError):
+    """Raised when a request references a model profile that is not configured."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"unknown model profile '{name}'")
 
 
 class EvaluationError(Exception):
-    """Raised by an evaluator when it cannot score the given input.
+    """Raised by a judge when it cannot score the given input.
 
-    These are *expected* failures (missing reference text, malformed config,
-    absent metrics) and are captured per-evaluator rather than failing the whole
-    request.
+    These are *expected* failures (missing required case fields, malformed
+    config, an unparseable model verdict) and are captured per-judge rather than
+    failing the whole request.
+    """
+
+
+class ModelError(Exception):
+    """Raised when a judge model call fails (transport, auth, bad response).
+
+    Captured per-judge by the orchestrator and surfaced as an errored result;
+    it never fails the whole evaluation request.
     """

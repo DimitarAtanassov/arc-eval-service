@@ -1,33 +1,48 @@
 """Route definitions only.
 
 Routes delegate straight to the service layer and shape nothing themselves. No
-orchestration, scoring or persistence logic lives here. Selecting sync vs async
-execution is request wiring (scheduling a background task), not business logic.
+orchestration, judging or persistence logic lives here. Selecting sync vs async
+execution (or scheduling offline ingest) is request wiring, not business logic.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    status,
+)
 
 from arc_eval_service.api.schemas import (
     BatchEvaluateRequest,
     EvaluateRequest,
     HealthResponse,
+    IngestResponse,
+    RerunRequest,
 )
 from arc_eval_service.core.config import Settings, get_settings
-from arc_eval_service.core.deps import get_evaluation_service
+from arc_eval_service.core.deps import (
+    get_evaluation_service,
+    get_offline_ingest_service,
+)
+from arc_eval_service.ingest.otlp import OfflineIngestService, OTLPTracePayload
 from arc_eval_service.schemas.models import (
     EvaluationRecord,
-    EvaluatorInfo,
     ExecutionMode,
+    JudgeInfo,
+    ModelProfileInfo,
 )
 from arc_eval_service.services.evaluation import EvaluationService
 
 router = APIRouter()
 
 ServiceDep = Annotated[EvaluationService, Depends(get_evaluation_service)]
+IngestDep = Annotated[OfflineIngestService, Depends(get_offline_ingest_service)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
@@ -43,12 +58,7 @@ async def evaluate(
     service: ServiceDep,
     background: BackgroundTasks,
 ) -> EvaluationRecord:
-    """Evaluate one interaction synchronously or asynchronously.
-
-    With ``mode="sync"`` the completed record is returned inline. With
-    ``mode="async"`` a PENDING record is returned immediately and the evaluation
-    runs in the background; poll ``GET /v1/evaluations/{id}`` for the result.
-    """
+    """Judge one interaction synchronously or asynchronously."""
     if request.mode is ExecutionMode.ASYNC:
         record = await service.submit(request)
         background.add_task(service.run_async, record.evaluation_id, request)
@@ -66,7 +76,7 @@ async def evaluate_batch(
     service: ServiceDep,
     settings: SettingsDep,
 ) -> list[EvaluationRecord]:
-    """Evaluate a batch of interactions synchronously, preserving order."""
+    """Judge a batch of interactions synchronously, preserving order."""
     if len(request.items) > settings.max_batch_size:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
@@ -97,7 +107,48 @@ async def get_evaluation(evaluation_id: str, service: ServiceDep) -> EvaluationR
     return await service.get(evaluation_id)
 
 
-@router.get("/v1/evaluators", response_model=list[EvaluatorInfo], tags=["evaluators"])
-async def list_evaluators(service: ServiceDep) -> list[EvaluatorInfo]:
-    """List the registered evaluators and their descriptions."""
-    return service.evaluators()
+@router.post(
+    "/v1/evaluations/{evaluation_id}/rerun",
+    response_model=EvaluationRecord,
+    tags=["evaluations"],
+)
+async def rerun_evaluation(
+    evaluation_id: str, request: RerunRequest, service: ServiceDep
+) -> EvaluationRecord:
+    """Re-judge a stored case, optionally with different judges/models."""
+    return await service.rerun(evaluation_id, request.judges)
+
+
+@router.get("/v1/judges", response_model=list[JudgeInfo], tags=["discovery"])
+async def list_judges(service: ServiceDep) -> list[JudgeInfo]:
+    """List the registered judges and what each requires."""
+    return service.judges()
+
+
+@router.get("/v1/models", response_model=list[ModelProfileInfo], tags=["discovery"])
+async def list_models(service: ServiceDep) -> list[ModelProfileInfo]:
+    """List the configured model profiles (no secrets)."""
+    return service.model_profiles()
+
+
+@router.post(
+    "/v1/otlp/traces",
+    response_model=IngestResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["ingest"],
+)
+async def ingest_traces(
+    payload: OTLPTracePayload,
+    ingest: IngestDep,
+    settings: SettingsDep,
+    background: BackgroundTasks,
+) -> IngestResponse:
+    """Accept an OTLP traces batch (from the collector) for offline judging."""
+    if not settings.ingest_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="offline ingestion is disabled",
+        )
+    cases = ingest.extract(payload)
+    background.add_task(ingest.run, cases)
+    return IngestResponse(accepted=len(cases))
