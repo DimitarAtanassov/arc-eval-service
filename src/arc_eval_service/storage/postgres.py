@@ -17,13 +17,19 @@ from sqlalchemy.ext.asyncio import (
 
 from arc_eval_service.core.errors import NotFoundError
 from arc_eval_service.schemas.models import (
+    EvaluationCase,
     EvaluationRecord,
     EvaluationResult,
     EvaluationStatus,
     ExecutionMode,
+    JudgeSpec,
 )
 from arc_eval_service.storage.base import EvaluationStore
 from arc_eval_service.storage.orm import EvaluationRow
+
+
+def _case_to_json(record: EvaluationRecord) -> dict[str, object] | None:
+    return record.case.model_dump(mode="json") if record.case is not None else None
 
 
 def record_to_row(record: EvaluationRecord) -> EvaluationRow:
@@ -34,6 +40,9 @@ def record_to_row(record: EvaluationRecord) -> EvaluationRow:
         status=record.status.value,
         mode=record.mode.value,
         results=[r.model_dump(mode="json") for r in record.results],
+        case=_case_to_json(record),
+        specs=[s.model_dump(mode="json") for s in record.specs],
+        rerun_of=record.rerun_of,
         aggregate_score=record.aggregate_score,
         passed=record.passed,
         created_at=record.created_at,
@@ -47,6 +56,9 @@ def apply_record(record: EvaluationRecord, row: EvaluationRow) -> None:
     row.status = record.status.value
     row.mode = record.mode.value
     row.results = [r.model_dump(mode="json") for r in record.results]
+    row.case = _case_to_json(record)
+    row.specs = [s.model_dump(mode="json") for s in record.specs]
+    row.rerun_of = record.rerun_of
     row.aggregate_score = record.aggregate_score
     row.passed = record.passed
     row.created_at = record.created_at
@@ -61,6 +73,9 @@ def row_to_record(row: EvaluationRow) -> EvaluationRecord:
         status=EvaluationStatus(row.status),
         mode=ExecutionMode(row.mode),
         results=[EvaluationResult.model_validate(r) for r in row.results],
+        case=EvaluationCase.model_validate(row.case) if row.case is not None else None,
+        specs=[JudgeSpec.model_validate(s) for s in row.specs],
+        rerun_of=row.rerun_of,
         aggregate_score=row.aggregate_score,
         passed=row.passed,
         created_at=row.created_at,

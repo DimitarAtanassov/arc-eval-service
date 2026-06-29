@@ -1,89 +1,96 @@
 # arc-eval-service
 
-Online and offline **AI quality evaluation** for the ARC control plane. The
-service computes quality signals and evaluation scores for AI interactions.
+**LLM-as-a-judge** quality evaluation for the ARC control plane. The service
+scores AI interactions with judge models you choose — Anthropic, OpenAI, a
+company-allowed model, or a **self-hosted** endpoint — stores every interaction
+it judged, and can **re-run** evaluations on stored data. It also accepts
+interactions **offline via OpenTelemetry** (gateway → collector → here).
 
-It is **not** an inference service, **not** a policy/guardrail service, and
-**not** a routing or provider-management service. It owns evaluation only.
+It is **not** an inference, guardrail, routing or provider-management service. It
+owns evaluation only, and evaluation means LLM-as-a-judge — nothing else.
 
-## Responsibilities
+In the wired stack the gateway calls this service for **online scoring**, and
+because each record echoes the judged interaction (its `case`), the evaluator is
+the **system of record** that **arc-platform** reads to render the console. See
+[arc-docs › services/arc-evaluator](../docs/arc-docs/docs/services/arc-evaluator.md)
+and [Running the Stack](../docs/arc-docs/docs/onboarding/running-the-stack.md).
 
-Owns:
+## Design
 
-- response quality evaluation
-- online + offline evaluation
-- regression scoring
-- experiment comparisons
-- evaluator execution orchestration
+Judges and models are **orthogonal** — any judge runs on any model:
 
-Does **not** own: inference, request routing, guardrails, provider management,
-visualization.
-
-## Architecture
-
-```
+```text
 src/arc_eval_service/
-    api/            # FastAPI routes + request/response schemas (no logic)
-    services/       # evaluation orchestration only
-    evaluators/     # evaluator strategies + registry (Strategy + Registry)
-    schemas/        # local Pydantic domain models
-    core/           # config, DI wiring, errors, structured logging
-    storage/        # persistence abstraction + in-memory and Postgres backends
-    observability/  # OpenTelemetry tracing
-migrations/         # Alembic migration environment + versions
+  api/            # FastAPI routes + schemas (shell)
+  services/       # evaluation orchestration: evaluate / rerun
+  judges/         # Judge strategy + registry (pure: build_prompt + parse)
+    builtins/     #   faithfulness, answer_relevance, safety, custom
+  models/         # JudgeModel port + adapters (anthropic, openai_compat) + profiles
+  ingest/         # OTLP-in: span -> case mapping + offline scheduling
+  storage/        # repository: in-memory + Postgres backends
+  core/           # config, DI wiring, errors
+migrations/       # Alembic versions
 ```
 
-Layering is strictly one-directional: `api -> services -> {evaluators, storage}`.
-The api layer holds no business logic; evaluators hold no persistence or tracing.
+| Pattern | Where | Why |
+| --- | --- | --- |
+| **Strategy + Registry** | `judges/` | add a metric by registering a judge (prompt + parser) |
+| **Ports & Adapters** | `models/`, `ingest/` | add a vendor / self-hosted endpoint; OTLP ingest is an inbound adapter |
+| **Functional core / shell** | judge `build_prompt`/`parse` vs orchestrator | test judging without a model |
+| **Repository** | `storage/` | swap in-memory ↔ Postgres behind one contract |
+| **Constructor injection** | `core/deps.py` | fakes in tests; no globals |
 
-### Evaluators (Strategy + Registry)
+### Judges (built-in)
 
-Every evaluator implements a single interface:
+| name | grades | requires |
+| --- | --- | --- |
+| `faithfulness` | answer is grounded in the context (no hallucination) | `output`, `context` |
+| `answer_relevance` | answer addresses the question | `input`, `output` |
+| `safety` | output is safe / policy-compliant | `output` |
+| `custom` | a caller-supplied rubric (`config.prompt`) | `output` |
 
-```python
-class Evaluator(ABC):
-    name: ClassVar[str]
-    description: ClassVar[str]
-    def evaluate(self, data: EvaluatorInput) -> EvaluationResult: ...
+Each judge instructs the model to return strict JSON
+`{"score": 0..1, "label": "...", "explanation": "..."}`; the parser tolerates
+fenced/loose JSON. A model/parse/validation failure **degrades that judge** into
+an errored result — it never fails the whole request. Add a judge by
+implementing `judges/base.py:LLMJudge` and registering it in
+`judges/registry.py:default_registry`.
+
+### Models & BYOK (profiles)
+
+A **profile** is a named, server-side model config; the API key is referenced by
+**env-var name** and resolved at call time — never stored in the profile, a
+request body, a span or a log. Self-hosted models plug in as an
+`openai_compatible` profile with a `base_url` (vLLM, Ollama, LM Studio, TGI, ...).
+
+```bash
+export ANTHROPIC_API_KEY=sk-...
+export ARC_EVAL_MODEL_PROFILES='[
+  {"name":"claude","provider":"anthropic","model":"claude-opus-4-8","api_key_env":"ANTHROPIC_API_KEY"},
+  {"name":"local","provider":"openai_compatible","model":"llama3","base_url":"http://localhost:9099/v1"}
+]'
+export ARC_EVAL_DEFAULT_MODEL=claude
 ```
 
-MVP evaluators (all pluggable via the registry — no plugin framework):
+A request picks a profile by name (and may override the model id):
 
-| name          | passes when                  | key config                          |
-|---------------|------------------------------|-------------------------------------|
-| `exact_match` | output equals reference      | `case_sensitive`, `strip`           |
-| `regex`       | output matches a pattern     | `pattern`, `mode`, `case_sensitive` |
-| `heuristic`   | response-quality checks pass | `min_length`, `forbid_refusal`, ... |
-| `latency`     | `latency_ms` within budget   | `threshold_ms`                      |
-| `token`       | total tokens within budget   | `max_total_tokens`                  |
-| `cost`        | `cost_usd` within budget     | `max_cost_usd`                      |
-
-The `latency`, `token` and `cost` evaluators share one shape — measure a metric,
-compare it to a numeric budget, grade the overshoot — so they subclass
-`BudgetEvaluator` (`evaluators/budget.py`) and supply only the metric and labels.
-
-Adding a new evaluator: implement `Evaluator` (or `BudgetEvaluator` for a
-budget-style check), then register it in
-`evaluators/registry.py:default_registry`. Nothing else changes.
+```jsonc
+{ "judge": "faithfulness", "model": "claude", "model_override": "claude-sonnet-4-6" }
+```
 
 ## API
 
-| Method | Path                   | Purpose                                  |
-|--------|------------------------|------------------------------------------|
-| GET    | `/health`              | Liveness probe                           |
-| POST   | `/v1/evaluate`         | Evaluate one interaction (sync or async) |
-| POST   | `/v1/evaluate/batch`   | Evaluate a batch synchronously           |
-| GET    | `/v1/evaluations`      | List recent evaluation records           |
-| GET    | `/v1/evaluations/{id}` | Retrieve a stored evaluation record      |
-| GET    | `/v1/evaluators`       | List registered evaluators               |
-
-### Sync vs async execution
-
-`POST /v1/evaluate` accepts a `mode` field:
-
-- `"sync"` (default): the completed record is returned inline.
-- `"async"`: a `pending` record is returned immediately; the evaluation runs in
-  the background. Poll `GET /v1/evaluations/{id}` for the result.
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET  | `/health` | liveness |
+| POST | `/v1/evaluate` | judge one interaction (sync or async) |
+| POST | `/v1/evaluate/batch` | judge a batch synchronously |
+| GET  | `/v1/evaluations` | list recent records |
+| GET  | `/v1/evaluations/{id}` | get a stored record |
+| POST | `/v1/evaluations/{id}/rerun` | re-judge a stored case (optionally new judges/models) |
+| GET  | `/v1/judges` | list judges + what each requires |
+| GET  | `/v1/models` | list configured model profiles (no secrets) |
+| POST | `/v1/otlp/traces` | offline ingest: OTLP/HTTP JSON from the collector |
 
 ### Example
 
@@ -91,102 +98,58 @@ budget-style check), then register it in
 curl -s localhost:8000/v1/evaluate -H 'content-type: application/json' -d '{
   "case": {
     "request_id": "req-1",
-    "output": "the answer is 42",
-    "reference": "the answer is 42",
-    "latency_ms": 120,
-    "cost_usd": 0.002
+    "input": "What is the capital of France?",
+    "output": "Paris.",
+    "context": ["France'\''s capital is Paris."]
   },
-  "evaluators": [
-    {"name": "exact_match"},
-    {"name": "regex", "config": {"pattern": "42"}},
-    {"name": "latency", "config": {"threshold_ms": 500}},
-    {"name": "cost", "config": {"max_cost_usd": 0.01}}
-  ],
+  "judges": [{"judge": "faithfulness", "model": "claude"}, {"judge": "safety"}],
   "mode": "sync"
 }'
 ```
 
-## Observability
+## Offline evaluation via OpenTelemetry
 
-OpenTelemetry tracing is required and configured at startup (console exporter for
-the MVP). Each request produces:
+The gateway emits content-bearing `arc.llm.call` spans (under
+`ARC_OTEL_CAPTURE_CONTENT=true`); the collector fans traces out to
+`POST /v1/otlp/traces`; the evaluator maps each span to a case and judges it with
+`ARC_EVAL_DEFAULT_JUDGE` on `ARC_EVAL_DEFAULT_MODEL`. The span→case mapping is a
+pure function (`ingest/otlp.py`). PII note: capturing prompt+completion is
+**opt-in**.
 
-- a root span `arc.eval.evaluate` (attrs: `evaluation_id`, `request_id`, `evaluator_count`)
-- one child span `arc.eval.evaluator` per evaluator (attrs: `evaluator_name`,
-  `evaluation_id`, `request_id`, `latency_ms`, `score`)
+## Re-running on stored data
 
-Logs are structured single-line JSON.
+Records persist the `case` and the judge `specs`, so a re-run re-judges the same
+interaction — with the same or different judges/models — and stores a **new**
+record linked via `rerun_of`:
+
+```bash
+curl -s -X POST localhost:8000/v1/evaluations/$ID/rerun -H 'content-type: application/json' \
+  -d '{"judges":[{"judge":"safety","model":"local"}]}'
+```
+
+## Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ARC_EVAL_MODEL_PROFILES` | `[]` | JSON list of `{name,provider,model,base_url?,api_key_env?}` |
+| `ARC_EVAL_DEFAULT_MODEL` | — | default profile name when a request omits `model` |
+| `ARC_EVAL_DEFAULT_JUDGE` | `safety` | judge used for offline ingestion |
+| `ARC_EVAL_INGEST_ENABLED` | `true` | enable `POST /v1/otlp/traces` |
+| `ARC_EVAL_DATABASE_URL` | — | Postgres URL (`postgresql+psycopg://...`); in-memory when unset |
+| `ARC_OTEL_*` | — | shared telemetry (endpoint, capture, etc.) via arc-telemetry |
 
 ## Persistence
 
-The service writes through the `EvaluationStore` abstraction, which has two
-backends selected by configuration:
+In-memory by default (nothing to run). Set `ARC_EVAL_DATABASE_URL` for Postgres
+(async SQLAlchemy + psycopg3); schema is managed by Alembic (`make migrate`).
 
-- **In-memory** (default): used when `ARC_EVAL_DATABASE_URL` is unset. Ideal for
-  local dev and tests; nothing to run.
-- **Postgres**: used when `ARC_EVAL_DATABASE_URL` is set (async SQLAlchemy +
-  psycopg3). Use the `postgresql+psycopg://` driver:
-
-  ```bash
-  export ARC_EVAL_DATABASE_URL="postgresql+psycopg://user:pass@localhost:5432/arc_eval"
-  make migrate        # alembic upgrade head
-  make run
-  ```
-
-Schema is managed by Alembic (`migrations/`). The initial migration creates the
-`evaluations` table (results stored as JSONB). Common commands:
+## Running & quality gate
 
 ```bash
-make migrate                       # apply migrations to head
-make migration NAME="add column"   # autogenerate a new revision
-make downgrade                     # roll back the last revision
+make run                 # uvicorn on :8000 (in-memory store, no profiles needed)
+make check               # uv lock --check + ruff + mypy strict + tests (≥80% cov)
 ```
 
-## Running locally (uv)
-
-```bash
-# install all dependency groups into the venv
-uv sync --all-groups
-
-# run the API with auto-reload (http://localhost:8000, docs at /docs)
-uv run uvicorn arc_eval_service.api.main:app --reload
-
-# or via the Makefile
-make run
-```
-
-## Make targets
-
-```bash
-make prepare           # uv sync --all-groups
-make lintable          # ruff format + ruff check --fix
-make lint              # ruff format --check, ruff check, mypy
-make test              # full suite + coverage report (fail_under = 80)
-make test-unit         # unit tests only
-make test-integration  # integration tests only
-make test-e2e          # e2e tests only
-make check             # lint + test (CI gate)
-make migrate           # apply Alembic migrations (needs ARC_EVAL_DATABASE_URL)
-make openapi           # export openapi.json
-make clean             # remove caches and build artifacts
-```
-
-CI runs `make lint` and `make test` on every push/PR
-([.github/workflows/ci.yml](.github/workflows/ci.yml)). Postgres-backed
-integration tests use `testcontainers[postgres]` and are skipped automatically
-when Docker is unavailable.
-
-## Docker
-
-```bash
-docker build -t arc-eval-service:latest .
-docker run --rm -p 8000:8000 arc-eval-service:latest
-```
-
-## Tooling
-
-- Python 3.13, `src/` layout, uv workspace compatible.
-- Ruff (`F,E,W,C90,I,N,UP,YTT,ANN,ASYNC,S,BLE,B,A,C4,PT,PL,PERF,RUF`),
-  max complexity 12, max args 8.
-- mypy `strict = true`.
-- pytest + pytest-asyncio; minimum coverage 80%.
+Tests need no network: judges run on a **stub model**, adapters are tested with
+`respx`, the OTLP mapper from a canned payload. Postgres-backed tests use
+`testcontainers` and skip when Docker is unavailable.

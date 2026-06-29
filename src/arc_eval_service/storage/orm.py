@@ -28,6 +28,9 @@ class EvaluationRow(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     mode: Mapped[str] = mapped_column(String, nullable=False)
     results: Mapped[list[dict[str, object]]] = mapped_column(JSONB, nullable=False)
+    case: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    specs: Mapped[list[dict[str, object]]] = mapped_column(JSONB, nullable=False)
+    rerun_of: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     aggregate_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

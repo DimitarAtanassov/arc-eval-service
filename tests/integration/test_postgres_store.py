@@ -73,10 +73,8 @@ async def test_create_get_update_roundtrip(store: PostgresEvaluationStore):
     completed = record.model_copy(
         update={
             "status": EvaluationStatus.COMPLETED,
-            "results": [
-                EvaluationResult(evaluator_name="exact_match", score=1.0, passed=True)
-            ],
-            "aggregate_score": 1.0,
+            "results": [EvaluationResult(judge="safety", score=0.9, passed=True)],
+            "aggregate_score": 0.9,
             "passed": True,
             "completed_at": datetime.now(UTC),
         }
@@ -86,7 +84,7 @@ async def test_create_get_update_roundtrip(store: PostgresEvaluationStore):
     again = await store.get("e1")
     assert again.status is EvaluationStatus.COMPLETED
     assert again.passed is True
-    assert again.results[0].evaluator_name == "exact_match"
+    assert again.results[0].judge == "safety"
 
 
 async def test_get_missing_raises_not_found(store: PostgresEvaluationStore):

@@ -1,46 +1,71 @@
-"""Service-level tests: a buggy evaluator must not strand or 500 the request."""
-
-from typing import ClassVar
+"""Service-level tests: a failing judge/model must not strand or 500 a request."""
 
 import pytest
 
-from arc_eval_service.evaluators.base import Evaluator
-from arc_eval_service.evaluators.exact_match import ExactMatchEvaluator
-from arc_eval_service.evaluators.registry import EvaluatorRegistry
+from arc_eval_service.core.errors import ModelError, UnknownModelError
+from arc_eval_service.judges.registry import default_registry
+from arc_eval_service.models.base import JudgeModel, ModelCompletion, ModelSettings
+from arc_eval_service.models.profiles import ModelProfile, ModelRegistry
 from arc_eval_service.schemas.models import (
     EvaluationCase,
     EvaluationRequest,
-    EvaluationResult,
     EvaluationStatus,
-    EvaluatorInput,
-    EvaluatorSpec,
+    JudgeSpec,
 )
 from arc_eval_service.services.evaluation import EvaluationService
 from arc_eval_service.storage.memory import InMemoryEvaluationStore
 
 pytestmark = pytest.mark.unit
 
-
-class BoomEvaluator(Evaluator):
-    name: ClassVar[str] = "boom"
-    description: ClassVar[str] = "Always raises an unexpected error."
-
-    def evaluate(self, data: EvaluatorInput) -> EvaluationResult:
-        raise RuntimeError("kaboom")
+GOOD_VERDICT = '{"score": 0.9, "label": "pass", "explanation": "looks good"}'
 
 
-def _service() -> EvaluationService:
-    registry = EvaluatorRegistry()
-    registry.register(ExactMatchEvaluator())
-    registry.register(BoomEvaluator())
-    return EvaluationService(store=InMemoryEvaluationStore(), registry=registry)
+class _StubModel(JudgeModel):
+    provider = "stub"
+
+    def __init__(self, text: str, *, fail: bool) -> None:
+        self.name = "stub-model"
+        self._text = text
+        self._fail = fail
+
+    async def complete(
+        self, *, system: str | None, prompt: str, settings: ModelSettings
+    ) -> ModelCompletion:
+        if self._fail:
+            raise ModelError("stub failure")
+        return ModelCompletion(text=self._text, model=self.name)
 
 
-async def test_unexpected_evaluator_error_is_contained():
-    service = _service()
+class _StubModelRegistry(ModelRegistry):
+    def __init__(self, *, text: str, fail: bool) -> None:
+        super().__init__(
+            [ModelProfile(name="default", provider="openai_compatible", model="stub")],
+            default="default",
+        )
+        self._text = text
+        self._fail = fail
+
+    def resolve(
+        self, name: str | None = None, *, model_override: str | None = None
+    ) -> JudgeModel:
+        if not self.has(name):
+            raise UnknownModelError(name or "default")
+        return _StubModel(self._text, fail=self._fail)
+
+
+def _service(*, text: str = GOOD_VERDICT, fail: bool = False) -> EvaluationService:
+    return EvaluationService(
+        store=InMemoryEvaluationStore(),
+        judges=default_registry(),
+        models=_StubModelRegistry(text=text, fail=fail),
+    )
+
+
+async def test_model_failure_is_contained() -> None:
+    service = _service(fail=True)
     request = EvaluationRequest(
         case=EvaluationCase(request_id="r1", output="x"),
-        evaluators=[EvaluatorSpec(name="boom")],
+        judges=[JudgeSpec(judge="safety")],
     )
     record = await service.evaluate(request)
     assert record.status is EvaluationStatus.FAILED
@@ -48,13 +73,40 @@ async def test_unexpected_evaluator_error_is_contained():
     assert record.aggregate_score is None
 
 
-async def test_one_buggy_evaluator_does_not_sink_the_rest():
+async def test_missing_required_field_degrades_that_judge() -> None:
     service = _service()
+    # faithfulness requires context; safety only needs output.
     request = EvaluationRequest(
-        case=EvaluationCase(request_id="r1", output="hi", reference="hi"),
-        evaluators=[EvaluatorSpec(name="exact_match"), EvaluatorSpec(name="boom")],
+        case=EvaluationCase(request_id="r1", output="hi"),
+        judges=[JudgeSpec(judge="safety"), JudgeSpec(judge="faithfulness")],
     )
     record = await service.evaluate(request)
-    results = {r.evaluator_name: r for r in record.results}
-    assert results["exact_match"].passed is True
-    assert results["boom"].error is not None
+    results = {r.judge: r for r in record.results}
+    assert results["safety"].error is None
+    assert results["safety"].passed is True
+    assert results["faithfulness"].error is not None  # missing context -> degraded
+
+
+async def test_unparseable_verdict_degrades() -> None:
+    service = _service(text="the model rambled with no json")
+    request = EvaluationRequest(
+        case=EvaluationCase(request_id="r1", output="x"),
+        judges=[JudgeSpec(judge="safety")],
+    )
+    record = await service.evaluate(request)
+    assert record.results[0].error is not None
+
+
+async def test_record_stores_specs_and_rerun_links_parent() -> None:
+    service = _service()
+    request = EvaluationRequest(
+        case=EvaluationCase(request_id="r1", output="hi"),
+        judges=[JudgeSpec(judge="safety")],
+    )
+    record = await service.evaluate(request)
+    assert [s.judge for s in record.specs] == ["safety"]
+
+    rerun = await service.rerun(record.evaluation_id)
+    assert rerun.rerun_of == record.evaluation_id
+    assert rerun.evaluation_id != record.evaluation_id
+    assert rerun.results[0].judge == "safety"

@@ -5,10 +5,12 @@ from datetime import UTC, datetime
 import pytest
 
 from arc_eval_service.schemas.models import (
+    EvaluationCase,
     EvaluationRecord,
     EvaluationResult,
     EvaluationStatus,
     ExecutionMode,
+    JudgeSpec,
 )
 from arc_eval_service.storage.postgres import (
     apply_record,
@@ -27,35 +29,40 @@ def _record() -> EvaluationRecord:
         mode=ExecutionMode.SYNC,
         results=[
             EvaluationResult(
-                evaluator_name="exact_match",
-                score=1.0,
+                judge="safety",
+                model="claude-opus-4-8",
+                score=0.9,
                 passed=True,
-                latency_ms=0.5,
-                details={"matched": "true"},
+                label="safe",
+                explanation="no issues",
+                latency_ms=12.5,
             )
         ],
-        aggregate_score=1.0,
+        aggregate_score=0.9,
         passed=True,
         created_at=datetime(2026, 6, 28, 12, 0, tzinfo=UTC),
         completed_at=datetime(2026, 6, 28, 12, 0, 1, tzinfo=UTC),
+        case=EvaluationCase(request_id="r1", output="hello", input="hi"),
+        specs=[JudgeSpec(judge="safety", model="default")],
+        rerun_of="parent-eval",
     )
 
 
-def test_record_round_trips_through_row():
+def test_record_round_trips_through_row() -> None:
     record = _record()
     restored = row_to_record(record_to_row(record))
     assert restored == record
 
 
-def test_results_serialize_to_json_safe_dicts():
+def test_results_and_specs_serialize_to_json_safe_dicts() -> None:
     row = record_to_row(_record())
-    assert isinstance(row.results, list)
-    assert row.results[0]["evaluator_name"] == "exact_match"
+    assert row.results[0]["judge"] == "safety"
+    assert row.specs[0]["judge"] == "safety"
+    assert row.rerun_of == "parent-eval"
     assert row.status == "completed"
-    assert row.mode == "sync"
 
 
-def test_apply_record_overwrites_mutable_fields():
+def test_apply_record_overwrites_mutable_fields() -> None:
     original = _record()
     row = record_to_row(original)
     updated = original.model_copy(
