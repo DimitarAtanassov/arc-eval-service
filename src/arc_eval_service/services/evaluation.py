@@ -21,7 +21,7 @@ from statistics import fmean
 from time import perf_counter
 from uuid import uuid4
 
-from opentelemetry.trace import Tracer
+from opentelemetry.trace import Span, Tracer
 
 from arc_eval_service.core.errors import EvaluationError, UnknownEvaluatorError
 from arc_eval_service.evaluators.registry import EvaluatorRegistry
@@ -75,9 +75,26 @@ class EvaluationService:
         return record
 
     async def run_async(self, evaluation_id: str, request: EvaluationRequest) -> None:
-        """Execute a previously submitted request and persist the result."""
+        """Execute a previously submitted request and persist the result.
+
+        Runs as a fire-and-forget background task, so it must never leave the
+        record stranded in PENDING: any unexpected failure is logged and the
+        record is marked FAILED instead of bubbling up unobserved.
+        """
         record = await self._store.get(evaluation_id)
-        completed = self._execute(record, request)
+        try:
+            completed = self._execute(record, request)
+        except Exception:
+            logger.exception(
+                "async evaluation crashed",
+                extra={"evaluation_id": evaluation_id, "request_id": record.request_id},
+            )
+            completed = record.model_copy(
+                update={
+                    "status": EvaluationStatus.FAILED,
+                    "completed_at": datetime.now(UTC),
+                }
+            )
         await self._store.update(completed)
 
     async def batch(self, requests: list[EvaluationRequest]) -> list[EvaluationRecord]:
@@ -87,6 +104,10 @@ class EvaluationService:
     async def get(self, evaluation_id: str) -> EvaluationRecord:
         """Return a stored record or raise ``NotFoundError``."""
         return await self._store.get(evaluation_id)
+
+    async def recent(self, limit: int) -> list[EvaluationRecord]:
+        """Return up to ``limit`` records, most recently created first."""
+        return await self._store.list_recent(limit)
 
     def evaluators(self) -> list[EvaluatorInfo]:
         """Return discovery metadata for every registered evaluator."""
@@ -164,27 +185,37 @@ class EvaluationService:
             try:
                 outcome = evaluator.evaluate(data)
             except EvaluationError as exc:
-                latency_ms = round((perf_counter() - start) * 1000, 4)
-                span.set_attribute("latency_ms", latency_ms)
-                span.set_attribute("error", str(exc))
-                logger.warning(
-                    "evaluator failed",
-                    extra={
-                        "evaluation_id": evaluation_id,
-                        "evaluator_name": spec.name,
-                        "request_id": request.case.request_id,
-                        "error": str(exc),
-                    },
-                )
-                return EvaluationResult(
-                    evaluator_name=spec.name,
-                    score=0.0,
-                    passed=False,
-                    latency_ms=latency_ms,
-                    error=str(exc),
-                )
+                # Expected failure (missing input/bad config): captured per
+                # evaluator, never fatal to the request.
+                return self._errored(spec, start, span, exc, level=logging.WARNING)
+            except Exception as exc:  # noqa: BLE001 - isolate buggy evaluator from peers
+                # Unexpected fault: contain it so one evaluator can't strand the
+                # whole record or 500 the request.
+                return self._errored(spec, start, span, exc, level=logging.ERROR)
             latency_ms = round((perf_counter() - start) * 1000, 4)
             result = outcome.model_copy(update={"latency_ms": latency_ms})
             span.set_attribute("latency_ms", result.latency_ms)
             span.set_attribute("score", result.score)
             return result
+
+    def _errored(
+        self,
+        spec: EvaluatorSpec,
+        start: float,
+        span: Span,
+        exc: Exception,
+        *,
+        level: int,
+    ) -> EvaluationResult:
+        """Build an errored result, recording latency and the fault on the span."""
+        latency_ms = round((perf_counter() - start) * 1000, 4)
+        span.set_attribute("latency_ms", latency_ms)
+        span.set_attribute("error", str(exc))
+        logger.log(level, "evaluator failed", extra={"evaluator_name": spec.name})
+        return EvaluationResult(
+            evaluator_name=spec.name,
+            score=0.0,
+            passed=False,
+            latency_ms=latency_ms,
+            error=str(exc),
+        )

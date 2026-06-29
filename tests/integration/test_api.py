@@ -83,6 +83,26 @@ async def test_get_unknown_evaluation_is_404(client: AsyncClient):
     assert response.status_code == 404
 
 
+async def test_list_evaluations_returns_recent_first(client: AsyncClient):
+    for rid in ("l1", "l2"):
+        await client.post(
+            "/v1/evaluate",
+            json={
+                "case": {"request_id": rid, "output": "a", "reference": "a"},
+                "evaluators": [{"name": "exact_match"}],
+            },
+        )
+    response = await client.get("/v1/evaluations?limit=10")
+    assert response.status_code == 200
+    request_ids = [r["request_id"] for r in response.json()]
+    assert request_ids == ["l2", "l1"]
+
+
+async def test_list_evaluations_rejects_out_of_range_limit(client: AsyncClient):
+    assert (await client.get("/v1/evaluations?limit=0")).status_code == 422
+    assert (await client.get("/v1/evaluations?limit=101")).status_code == 422
+
+
 async def test_batch_preserves_order(client: AsyncClient):
     payload = {
         "items": [
