@@ -73,6 +73,7 @@ budget-style check), then register it in
 | GET    | `/health`              | Liveness probe                           |
 | POST   | `/v1/evaluate`         | Evaluate one interaction (sync or async) |
 | POST   | `/v1/evaluate/batch`   | Evaluate a batch synchronously           |
+| GET    | `/v1/evaluations`      | List recent evaluation records           |
 | GET    | `/v1/evaluations/{id}` | Retrieve a stored evaluation record      |
 | GET    | `/v1/evaluators`       | List registered evaluators               |
 

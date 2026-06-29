@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 
 from arc_eval_service.api.schemas import (
     BatchEvaluateRequest,
@@ -74,6 +74,15 @@ async def evaluate_batch(
             f"max_batch_size ({settings.max_batch_size})",
         )
     return await service.batch(request.items)
+
+
+@router.get("/v1/evaluations", response_model=list[EvaluationRecord], tags=["evaluations"])
+async def list_evaluations(
+    service: ServiceDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> list[EvaluationRecord]:
+    """List recent evaluation records, most recently created first."""
+    return await service.recent(limit)
 
 
 @router.get(
