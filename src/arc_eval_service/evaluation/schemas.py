@@ -1,15 +1,15 @@
-"""Evaluation domain models and HTTP DTOs.
+"""Evaluation domain types used by the judging libraries.
 
-The core domain language of the service: the interaction under test
-(:class:`EvaluationCase`), the metrics to score it with (:class:`MetricSpec`),
-and the per-metric outcome (:class:`EvaluationResult`). There is no aggregate:
-each metric produces one independent result, and any roll-up is the caller's
-concern.
+The interaction under test (:class:`EvaluationCase`), the metric to score it with
+(:class:`MetricSpec`) and the per-metric outcome (:class:`EvaluationResult`).
+There is no aggregate: each metric produces one independent result, and any
+roll-up is the caller's concern.
+
+These types are the contract the metric and judging libraries share; they are not
+tied to any HTTP endpoint.
 """
 
 from __future__ import annotations
-
-from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -66,57 +66,3 @@ class EvaluationResult(BaseModel):
     explanation: str | None = None
     latency_ms: float = Field(default=0.0, ge=0.0)
     error: str | None = None
-
-
-class EvaluationRequest(BaseModel):
-    """A case plus the metrics to score it with."""
-
-    case: EvaluationCase
-    metrics: list[MetricSpec] = Field(..., min_length=1)
-
-
-class BatchEvaluationRequest(BaseModel):
-    """A batch of evaluation requests, scored in order."""
-
-    items: list[EvaluationRequest] = Field(..., min_length=1)
-
-
-class RerunRequest(BaseModel):
-    """Re-score a stored case, optionally with different metrics.
-
-    When ``metrics`` is omitted the metrics from the prior results are reused.
-    """
-
-    metrics: list[MetricSpec] | None = Field(default=None, min_length=1)
-
-
-class StoredCase(BaseModel):
-    """A persisted eval-ready case: the interaction plus its storage identity."""
-
-    case_id: str
-    trace_id: str | None = None
-    created_at: datetime
-    case: EvaluationCase
-
-
-class EvaluationResponse(BaseModel):
-    """A stored case with its per-metric results (the read model)."""
-
-    case_id: str
-    request_id: str
-    trace_id: str | None = None
-    created_at: datetime
-    results: list[EvaluationResult] = Field(default_factory=list)
-
-    @classmethod
-    def of(
-        cls, stored: StoredCase, results: list[EvaluationResult]
-    ) -> EvaluationResponse:
-        """Compose a response from a stored case and its results."""
-        return cls(
-            case_id=stored.case_id,
-            request_id=stored.case.request_id,
-            trace_id=stored.trace_id,
-            created_at=stored.created_at,
-            results=results,
-        )

@@ -1,9 +1,8 @@
 """The judge engine: score a metric against a case on a model.
 
-The imperative shell of judging. Given a :class:`MetricSpec` and a case it
-resolves the metric and model, renders the metric's rubric into a strict-JSON
-prompt, runs the model inside an ``arc.llm.call`` span, parses the verdict and
-applies the metric's threshold. A validation, model or parse failure degrades
+Given a :class:`MetricSpec` and a case it resolves the metric and model, renders
+the metric's rubric into a strict-JSON prompt, runs the model, parses the verdict
+and applies the metric's threshold. A validation, model or parse failure degrades
 that metric into an errored result and is never raised, so one bad metric cannot
 fail the whole request.
 """
@@ -13,14 +12,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from time import perf_counter
-
-from arc_telemetry import (
-    LLMInvocation,
-    Message,
-    Role,
-    evaluation_span,
-    llm_span,
-)
 
 from arc_eval_service.core.errors import (
     EvaluationError,
@@ -60,16 +51,8 @@ class JudgeEngine:
             model = self._models.resolve(spec.model, model_override=spec.model_override)
             system = f"{metric.instructions(spec.config)}\n\n{VERDICT_INSTRUCTION}"
             user = metric.render(case)
-            with evaluation_span(spec.metric) as ev:
-                ev.span.set_attribute("case_id", case_id)
-                ev.span.set_attribute("request_id", case.request_id)
-                completion = await self._complete(model, system, user)
-                verdict = parse_verdict(completion.text)
-                ev.set_result(
-                    score=verdict.score,
-                    label=verdict.label,
-                    explanation=verdict.explanation,
-                )
+            completion = await self._complete(model, system, user)
+            verdict = parse_verdict(completion.text)
         except (EvaluationError, ModelError, UnknownModelError) as exc:
             return _errored(spec, start, exc, level=logging.WARNING)
         except Exception as exc:  # noqa: BLE001 - isolate a buggy metric from peers
@@ -90,26 +73,10 @@ class JudgeEngine:
     async def _complete(
         self, model: JudgeModel, system: str, user: str
     ) -> ModelCompletion:
-        """Call the judge model inside an ``llm.call`` span (arc.llm.*)."""
-        messages = [Message(role=Role.USER, content=user)]
-        if system:
-            messages.insert(0, Message(role=Role.SYSTEM, content=system))
-        invocation = LLMInvocation(
-            provider=model.provider,
-            request_model=model.name,
-            messages=tuple(messages),
+        """Call the judge model for a single-turn completion."""
+        return await model.complete(
+            system=system, prompt=user, settings=ModelSettings()
         )
-        with llm_span(invocation) as rec:
-            completion = await model.complete(
-                system=system, prompt=user, settings=ModelSettings()
-            )
-            rec.set_response(
-                response_model=completion.model,
-                input_tokens=completion.input_tokens,
-                output_tokens=completion.output_tokens,
-                completion=completion.text,
-            )
-            return completion
 
 
 def _check_requires(metric: Metric, case: EvaluationCase) -> None:

@@ -1,169 +1,212 @@
 # arc-eval-service
 
-**LLM-as-a-judge** quality evaluation for the ARC control plane. The service
-scores AI interactions with judge models you choose — Anthropic, OpenAI, a
-company-allowed model, or a **self-hosted** endpoint — stores every interaction
-it judged, and can **re-run** evaluations on stored data. It also accepts
-interactions **offline via OpenTelemetry** (gateway → collector → here).
+The arc-eval-service stores AI interactions so they can be evaluated for quality
+later. It is one service in the ARC control plane.
 
-It is **not** an inference, guardrail, routing or provider-management service. It
-owns evaluation only, and evaluation means LLM-as-a-judge — nothing else.
+Right now the service is a storage foundation. It exposes one endpoint that
+receives an LLM interaction and saves it. It does not run any evaluation. The
+tables that hold metrics and evaluation results are in place, ready for the
+evaluation logic that will be added later.
 
-In the wired stack the gateway calls this service for **online scoring**, and
-because each record echoes the judged interaction (its `case`), the evaluator is
-the **system of record** that **arc-platform** reads to render the console. See
-[arc-docs › services/arc-evaluator](../docs/arc-docs/docs/services/arc-evaluator.md)
-and [Running the Stack](../docs/arc-docs/docs/onboarding/running-the-stack.md).
+The service does not use OpenTelemetry. It is a plain FastAPI service over
+Postgres.
 
-## Design
+## What it does
 
-Judges and models are **orthogonal** — any judge runs on any model:
+- Accepts one LLM interaction over a single endpoint and stores it.
+- Stores the prompt template once per distinct template (it deduplicates).
+- Stores the rendered prompt, the values that filled the template, the system
+  message, the LLM response, and the LLM config.
+
+## What it does not do
+
+- It does not run evaluation. The ingest endpoint only stores data.
+- It does not call any model. There is no network call on the request path.
+- It does not roll results up into a single score.
+
+## The single endpoint
+
+```
+POST /v1/eval-inputs
+```
+
+Send one LLM interaction. The service stores the template (deduplicated) and the
+input, then returns the two ids.
+
+```jsonc
+// request
+{
+  "prompt_template": "Answer using the context.\nQ: {question}\nContext: {context}",
+  "template_context": {
+    "question": "What is the capital of France?",
+    "context": "The capital of France is Paris."
+  },
+  "rendered_prompt": "Answer using the context.\nQ: What is the capital of France?\nContext: The capital of France is Paris.",
+  "system_message": "You are a careful assistant.",
+  "llm_response": { "role": "assistant", "content": "Paris." },
+  "llm_config": { "model": "gpt-4o", "temperature": 0.0 }
+}
+
+// 201 Created
+{
+  "eval_input_id": "0f2b9a3e-...",
+  "prompt_template_id": "7c1d4f88-..."
+}
+```
+
+`prompt_template` and `rendered_prompt` are required. A request that omits them
+is rejected with `422`. Sending the same `prompt_template` again returns the same
+`prompt_template_id`; the template row is stored once.
+
+The only other route is `GET /health`, a liveness check.
+
+## Data model
+
+```mermaid
+erDiagram
+    prompt_templates ||--o{ eval_inputs : "rendered into"
+    prompt_templates ||--o{ metrics : "optional ref"
+    eval_inputs ||--o{ evaluation_runs : "evaluated by"
+    metrics ||--o{ evaluation_runs : "scored with"
+
+    prompt_templates {
+        uuid id PK
+        text template
+        text content_hash UK
+        timestamptz created_at
+    }
+    eval_inputs {
+        uuid id PK
+        uuid prompt_template_id FK
+        jsonb template_context
+        text rendered_prompt
+        text system_message
+        jsonb llm_response
+        jsonb llm_config
+        timestamptz created_at
+    }
+    metrics {
+        uuid id PK
+        text name UK
+        text prompt
+        uuid prompt_template_id FK
+        jsonb input_variables
+        timestamptz created_at
+    }
+    evaluation_runs {
+        uuid id PK
+        uuid eval_input_id FK
+        uuid metric_id FK
+        jsonb judge_config
+        float score
+        bool passed
+        text label
+        text explanation
+        text error
+        timestamptz created_at
+    }
+```
+
+- `prompt_templates`: the raw template with placeholders. A `content_hash` unique
+  index keeps one row per distinct template, so a template that arrives on every
+  request is stored once.
+- `eval_inputs`: the interaction to evaluate. It links to its template, holds the
+  context key and value pairs (placeholder to value), the rendered prompt, the
+  system message, the LLM response, and the LLM config.
+- `metrics`: a metric definition. A name, plus an optional inline `prompt` or an
+  optional template reference with its `input_variables`.
+- `evaluation_runs`: one metric run against one input. It links to the input and
+  the metric, holds the judge config used, and the result columns. The ingest
+  endpoint does not write this table.
+
+The ingest endpoint writes `prompt_templates` and `eval_inputs` only. The
+`metrics` and `evaluation_runs` tables are the foundation for the evaluation
+logic that comes later.
+
+## Project layout
 
 ```text
 src/arc_eval_service/
-  api/            # FastAPI routes + schemas (shell)
-  services/       # evaluation orchestration: evaluate / rerun
-  judges/         # Judge strategy + registry (pure: build_prompt + parse)
-    builtins/     #   faithfulness, answer_relevance, safety, custom
-  models/         # JudgeModel port + adapters (anthropic, openai_compat) + profiles
-  ingest/         # OTLP-in: span -> case mapping + offline scheduling
-  storage/        # repository: in-memory + Postgres backends
-  core/           # config, DI wiring, errors
-migrations/       # Alembic versions
+  app.py            # builds the FastAPI app, the health route, error handlers
+  core/
+    config.py       # settings, read from ARC_EVAL_* environment variables
+    deps.py         # dependency injection (builds the database and services)
+    errors.py       # domain errors, mapped to HTTP status codes by app.py
+    logging.py      # JSON structured logging
+  ingestion/        # the single endpoint
+    schemas.py      # request, response, and domain models
+    service.py      # store the template (deduplicated), then the eval input
+    router.py       # POST /v1/eval-inputs
+  db/
+    engine.py       # async engine and session factory (Postgres only)
+    models.py       # the four tables
+    repositories/   # prompt_templates and eval_inputs, with pure row mappers
+  metrics/          # metric definitions library (kept for the evaluation logic)
+  judging/          # judge model adapters and scoring engine (kept for later)
+  evaluation/
+    schemas.py      # shared domain types used by metrics/ and judging/
+migrations/         # Alembic migrations
 ```
 
-| Pattern | Where | Why |
-| --- | --- | --- |
-| **Strategy + Registry** | `judges/` | add a metric by registering a judge (prompt + parser) |
-| **Ports & Adapters** | `models/`, `ingest/` | add a vendor / self-hosted endpoint; OTLP ingest is an inbound adapter |
-| **Functional core / shell** | judge `build_prompt`/`parse` vs orchestrator | test judging without a model |
-| **Repository** | `storage/` | swap in-memory ↔ Postgres behind one contract |
-| **Constructor injection** | `core/deps.py` | fakes in tests; no globals |
-
-### Judges (built-in)
-
-| name | grades | requires |
-| --- | --- | --- |
-| `faithfulness` | answer is grounded in the context (no hallucination) | `output`, `context` |
-| `answer_relevance` | answer addresses the question | `input`, `output` |
-| `safety` | output is safe / policy-compliant | `output` |
-| `custom` | a caller-supplied rubric (`config.prompt`) | `output` |
-
-Each judge instructs the model to return strict JSON
-`{"score": 0..1, "label": "...", "explanation": "..."}`; the parser tolerates
-fenced/loose JSON. A model/parse/validation failure **degrades that judge** into
-an errored result — it never fails the whole request. Add a judge by
-implementing `judges/base.py:LLMJudge` and registering it in
-`judges/registry.py:default_registry`.
-
-### Models & BYOK (profiles)
-
-A **profile** is a named, server-side model config; the API key is referenced by
-**env-var name** and resolved at call time — never stored in the profile, a
-request body, a span or a log. Self-hosted models plug in as an
-`openai_compatible` profile with a `base_url` (vLLM, Ollama, LM Studio, TGI, ...).
-
-```bash
-export ANTHROPIC_API_KEY=sk-...
-export ARC_EVAL_MODEL_PROFILES='[
-  {"name":"claude","provider":"anthropic","model":"claude-opus-4-8","api_key_env":"ANTHROPIC_API_KEY"},
-  {"name":"local","provider":"openai_compatible","model":"llama3","base_url":"http://localhost:9099/v1"}
-]'
-export ARC_EVAL_DEFAULT_MODEL=claude
-```
-
-A request picks a profile by name (and may override the model id):
-
-```jsonc
-{ "judge": "faithfulness", "model": "claude", "model_override": "claude-sonnet-4-6" }
-```
-
-## API
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET  | `/health` | liveness |
-| POST | `/v1/evaluate` | judge one interaction (sync or async) |
-| POST | `/v1/evaluate/batch` | judge a batch synchronously |
-| GET  | `/v1/evaluations` | list recent records |
-| GET  | `/v1/evaluations/{id}` | get a stored record |
-| POST | `/v1/evaluations/{id}/rerun` | re-judge a stored case (optionally new judges/models) |
-| GET  | `/v1/judges` | list judges + what each requires |
-| GET  | `/v1/models` | list configured model profiles (no secrets) |
-| POST | `/v1/otlp/traces` | OTLP/HTTP ingest from the collector (gzip-aware): store spans + offline-judge |
-| GET  | `/v1/traces/{trace_id}` | real span tree for a trace (span store) |
-
-### Example
-
-```bash
-curl -s localhost:8000/v1/evaluate -H 'content-type: application/json' -d '{
-  "case": {
-    "request_id": "req-1",
-    "input": "What is the capital of France?",
-    "output": "Paris.",
-    "context": ["France'\''s capital is Paris."]
-  },
-  "judges": [{"judge": "faithfulness", "model": "claude"}, {"judge": "safety"}],
-  "mode": "sync"
-}'
-```
-
-## Offline evaluation + span store via OpenTelemetry
-
-The gateway emits content-bearing `arc.llm.call` spans (under
-`ARC_OTEL_CAPTURE_CONTENT=true`); the collector fans every span to
-`POST /v1/otlp/traces` as gzip OTLP/JSON. The evaluator does two things with the
-batch:
-
-- **Span store (ADR-0006):** it normalises and upserts every span (idempotent on
-  `span_id`) and serves the real span tree at `GET /v1/traces/{trace_id}` for
-  `arc-platform`. The store holds both inference (`arc.llm.*`) and evaluation
-  (`arc.eval.*`) spans.
-- **Offline judging:** it maps inbound `arc.llm.call` spans to cases and judges
-  them with `ARC_EVAL_DEFAULT_JUDGE` on `ARC_EVAL_DEFAULT_MODEL`. Spans from the
-  evaluator itself are stored but **not** re-judged (its own judge calls are
-  `arc.llm.call` spans too), which breaks the collector feedback loop. The
-  span→case mapping is a pure function (`ingest/otlp.py`).
-
-A gzip-decoding middleware makes the endpoint a spec-conformant OTLP/HTTP
-receiver. PII note: capturing prompt+completion is **opt-in**.
-
-## Re-running on stored data
-
-Records persist the `case` and the judge `specs`, so a re-run re-judges the same
-interaction — with the same or different judges/models — and stores a **new**
-record linked via `rerun_of`:
-
-```bash
-curl -s -X POST localhost:8000/v1/evaluations/$ID/rerun -H 'content-type: application/json' \
-  -d '{"judges":[{"judge":"safety","model":"local"}]}'
-```
+The `metrics/` and `judging/` packages are kept as libraries for the evaluation
+logic that will run later. The ingest endpoint does not use them.
 
 ## Configuration
 
-| Variable | Default | Meaning |
+All settings are read from `ARC_EVAL_*` environment variables.
+
+| Variable | Required | Meaning |
 | --- | --- | --- |
-| `ARC_EVAL_MODEL_PROFILES` | `[]` | JSON list of `{name,provider,model,base_url?,api_key_env?}` |
-| `ARC_EVAL_DEFAULT_MODEL` | — | default profile name when a request omits `model` |
-| `ARC_EVAL_DEFAULT_JUDGE` | `safety` | judge used for offline ingestion |
-| `ARC_EVAL_INGEST_ENABLED` | `true` | enable `POST /v1/otlp/traces` |
-| `ARC_EVAL_DATABASE_URL` | — | Postgres URL (`postgresql+psycopg://...`); in-memory when unset |
-| `ARC_OTEL_*` | — | shared telemetry (endpoint, capture, etc.) via arc-telemetry |
+| `ARC_EVAL_DATABASE_URL` | yes | Async Postgres URL, for example `postgresql+psycopg://user:pass@host:5432/db`. |
+| `ARC_EVAL_APP_NAME` | no | Title shown in the API docs. Defaults to `arc-eval-service`. |
+| `ARC_EVAL_SERVICE_NAME` | no | Service name in the health response. Defaults to `arc-eval-service`. |
+| `ARC_EVAL_LOG_LEVEL` | no | Log level for the JSON logger. Defaults to `INFO`. |
 
 ## Persistence
 
-In-memory by default (nothing to run). Set `ARC_EVAL_DATABASE_URL` for Postgres
-(async SQLAlchemy + psycopg3); schema is managed by Alembic (`make migrate`).
-Two tables: `evaluations` (one row per judge result) and `spans` (the ingested
-span store, keyed on `span_id`).
+The service uses Postgres only. The database URL is required. Storage uses async
+SQLAlchemy 2.0 with psycopg3. The schema is managed by Alembic, applied with
+`make migrate`. There are four tables: `prompt_templates`, `eval_inputs`,
+`metrics`, and `evaluation_runs`.
 
-## Running & quality gate
+## Running locally
+
+Bring up Postgres and the service with Docker Compose. The service runs
+`alembic upgrade head` before it serves, so the schema is always current.
 
 ```bash
-make run                 # uvicorn on :8000 (in-memory store, no profiles needed)
-make check               # uv lock --check + ruff + mypy strict + tests (≥80% cov)
+docker compose up
 ```
 
-Tests need no network: judges run on a **stub model**, adapters are tested with
-`respx`, the OTLP mapper from a canned payload. Postgres-backed tests use
-`testcontainers` and skip when Docker is unavailable.
+To run the service from source with auto-reload, start just the database first,
+then run the app. The app needs `ARC_EVAL_DATABASE_URL` to point at that
+database.
+
+```bash
+docker compose up db
+export ARC_EVAL_DATABASE_URL=postgresql+psycopg://arc:arc@localhost:5432/arc_eval
+make run                 # uvicorn on port 8000
+```
+
+## Testing
+
+Unit tests have no external dependencies. Database-backed tests use a Postgres
+testcontainer and skip themselves when Docker is not available.
+
+```bash
+make test-unit           # fast tests, no external dependencies
+make test-integration    # exercise the HTTP API against Postgres
+make test-e2e            # the full store, then read-back flow
+```
+
+## Make targets
+
+| Target | What it does |
+| --- | --- |
+| `make run` | run the app locally with auto-reload on port 8000 |
+| `make lint` | check the lockfile, run Ruff format and check, run mypy strict |
+| `make test` | run the full test suite with coverage |
+| `make check` | run lint and the full test suite (the CI gate) |
+| `make migrate` | apply database migrations to head |
+| `make migration NAME=...` | autogenerate a migration from the models |
+| `make docker` | build the container image |

@@ -1,9 +1,9 @@
-"""initial schema: traces, spans, cases, eval_results
+"""initial schema: prompt_templates, eval_inputs, metrics, evaluation_runs
 
-The service owns four tables: ``traces`` and ``spans`` capture the OTel
-telemetry tree, ``cases`` holds eval-ready interactions, and ``eval_results``
-holds one row per metric verdict (results cascade-delete with their case). There
-is no aggregate table.
+The service owns four tables: ``prompt_templates`` stores a template once per
+distinct content; ``eval_inputs`` holds one LLM interaction to evaluate;
+``metrics`` holds a metric definition; ``evaluation_runs`` holds one metric run
+against one input (runs cascade-delete with their input).
 
 Revision ID: 0001
 Revises:
@@ -28,96 +28,103 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.create_table(
-        "traces",
-        sa.Column("trace_id", sa.String(), nullable=False),
-        sa.Column("request_id", sa.String(), nullable=False),
-        sa.Column("service_name", sa.String(), nullable=True),
-        sa.Column("start_unix_nano", sa.BigInteger(), nullable=False),
-        sa.Column("end_unix_nano", sa.BigInteger(), nullable=False),
+        "prompt_templates",
+        sa.Column("id", sa.String(), nullable=False),
+        sa.Column("template", sa.Text(), nullable=False),
+        sa.Column("content_hash", sa.String(length=64), nullable=False),
         sa.Column(
-            "ingested_at",
+            "created_at",
             sa.DateTime(timezone=True),
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.PrimaryKeyConstraint("trace_id"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("content_hash"),
     )
-    op.create_index("ix_traces_request_id", "traces", ["request_id"])
-    op.create_index("ix_traces_ingested_at", "traces", ["ingested_at"])
 
     op.create_table(
-        "spans",
-        sa.Column("span_id", sa.String(), nullable=False),
-        sa.Column("trace_id", sa.String(), nullable=False),
-        sa.Column("parent_span_id", sa.String(), nullable=True),
+        "eval_inputs",
+        sa.Column("id", sa.String(), nullable=False),
+        sa.Column("prompt_template_id", sa.String(), nullable=False),
+        sa.Column("template_context", postgresql.JSONB(), nullable=False),
+        sa.Column("rendered_prompt", sa.Text(), nullable=False),
+        sa.Column("system_message", sa.Text(), nullable=True),
+        sa.Column("llm_response", postgresql.JSONB(), nullable=False),
+        sa.Column("llm_config", postgresql.JSONB(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(["prompt_template_id"], ["prompt_templates.id"]),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        "ix_eval_inputs_prompt_template_id", "eval_inputs", ["prompt_template_id"]
+    )
+    op.create_index("ix_eval_inputs_created_at", "eval_inputs", ["created_at"])
+
+    op.create_table(
+        "metrics",
+        sa.Column("id", sa.String(), nullable=False),
         sa.Column("name", sa.String(), nullable=False),
-        sa.Column("service_name", sa.String(), nullable=True),
-        sa.Column("kind", sa.String(), nullable=True),
-        sa.Column("start_unix_nano", sa.BigInteger(), nullable=False),
-        sa.Column("end_unix_nano", sa.BigInteger(), nullable=False),
-        sa.Column("attributes", postgresql.JSONB(), nullable=False),
+        sa.Column("prompt", sa.Text(), nullable=True),
+        sa.Column("prompt_template_id", sa.String(), nullable=True),
+        sa.Column("input_variables", postgresql.JSONB(), nullable=True),
         sa.Column(
-            "ingested_at",
+            "created_at",
             sa.DateTime(timezone=True),
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.PrimaryKeyConstraint("span_id"),
+        sa.ForeignKeyConstraint(["prompt_template_id"], ["prompt_templates.id"]),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("name"),
     )
-    op.create_index("ix_spans_trace_id", "spans", ["trace_id"])
-    op.create_index("ix_spans_service_name", "spans", ["service_name"])
-    op.create_index("ix_spans_ingested_at", "spans", ["ingested_at"])
+    op.create_index("ix_metrics_prompt_template_id", "metrics", ["prompt_template_id"])
 
     op.create_table(
-        "cases",
-        sa.Column("case_id", sa.String(), nullable=False),
-        sa.Column("request_id", sa.String(), nullable=False),
-        sa.Column("trace_id", sa.String(), nullable=True),
-        sa.Column("input", sa.Text(), nullable=True),
-        sa.Column("output", sa.Text(), nullable=True),
-        sa.Column("context", postgresql.JSONB(), nullable=True),
-        sa.Column("reference", sa.Text(), nullable=True),
-        sa.Column("metadata", postgresql.JSONB(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.PrimaryKeyConstraint("case_id"),
-    )
-    op.create_index("ix_cases_request_id", "cases", ["request_id"])
-    op.create_index("ix_cases_trace_id", "cases", ["trace_id"])
-    op.create_index("ix_cases_created_at", "cases", ["created_at"])
-
-    op.create_table(
-        "eval_results",
-        sa.Column("result_id", sa.String(), nullable=False),
-        sa.Column("case_id", sa.String(), nullable=False),
-        sa.Column("metric", sa.String(), nullable=False),
-        sa.Column("model", sa.String(), nullable=True),
-        sa.Column("score", sa.Float(), nullable=False),
-        sa.Column("passed", sa.Boolean(), nullable=False),
+        "evaluation_runs",
+        sa.Column("id", sa.String(), nullable=False),
+        sa.Column("eval_input_id", sa.String(), nullable=False),
+        sa.Column("metric_id", sa.String(), nullable=False),
+        sa.Column("judge_config", postgresql.JSONB(), nullable=False),
+        sa.Column("score", sa.Float(), nullable=True),
+        sa.Column("passed", sa.Boolean(), nullable=True),
         sa.Column("label", sa.String(), nullable=True),
         sa.Column("explanation", sa.Text(), nullable=True),
-        sa.Column("latency_ms", sa.Float(), nullable=False),
         sa.Column("error", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(["case_id"], ["cases.case_id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("result_id"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(
+            ["eval_input_id"], ["eval_inputs.id"], ondelete="CASCADE"
+        ),
+        sa.ForeignKeyConstraint(["metric_id"], ["metrics.id"]),
+        sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_eval_results_case_id", "eval_results", ["case_id"])
+    op.create_index(
+        "ix_evaluation_runs_eval_input_id", "evaluation_runs", ["eval_input_id"]
+    )
+    op.create_index("ix_evaluation_runs_metric_id", "evaluation_runs", ["metric_id"])
+    op.create_index("ix_evaluation_runs_created_at", "evaluation_runs", ["created_at"])
 
 
 def downgrade() -> None:
-    op.drop_index("ix_eval_results_case_id", table_name="eval_results")
-    op.drop_table("eval_results")
+    op.drop_index("ix_evaluation_runs_created_at", table_name="evaluation_runs")
+    op.drop_index("ix_evaluation_runs_metric_id", table_name="evaluation_runs")
+    op.drop_index("ix_evaluation_runs_eval_input_id", table_name="evaluation_runs")
+    op.drop_table("evaluation_runs")
 
-    op.drop_index("ix_cases_created_at", table_name="cases")
-    op.drop_index("ix_cases_trace_id", table_name="cases")
-    op.drop_index("ix_cases_request_id", table_name="cases")
-    op.drop_table("cases")
+    op.drop_index("ix_metrics_prompt_template_id", table_name="metrics")
+    op.drop_table("metrics")
 
-    op.drop_index("ix_spans_ingested_at", table_name="spans")
-    op.drop_index("ix_spans_service_name", table_name="spans")
-    op.drop_index("ix_spans_trace_id", table_name="spans")
-    op.drop_table("spans")
+    op.drop_index("ix_eval_inputs_created_at", table_name="eval_inputs")
+    op.drop_index("ix_eval_inputs_prompt_template_id", table_name="eval_inputs")
+    op.drop_table("eval_inputs")
 
-    op.drop_index("ix_traces_ingested_at", table_name="traces")
-    op.drop_index("ix_traces_request_id", table_name="traces")
-    op.drop_table("traces")
+    op.drop_table("prompt_templates")

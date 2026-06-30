@@ -1,1 +1,1 @@
-"""Evaluation slice: score a case with metrics and persist the results."""
+"""Evaluation domain types shared by the metrics and judging libraries."""

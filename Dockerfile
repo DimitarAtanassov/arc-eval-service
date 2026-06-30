@@ -2,8 +2,7 @@
 # Container image for arc-eval-service. Build from the repo root:
 #   docker build -t arc-eval-service:latest .
 
-# --- Builder: resolve dependencies (incl. the arc-telemetry Git source) into a
-# self-contained venv. git is needed because arc-telemetry is a Git dependency.
+# --- Builder: resolve dependencies into a self-contained venv.
 FROM python:3.13-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -12,10 +11,6 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv
 
