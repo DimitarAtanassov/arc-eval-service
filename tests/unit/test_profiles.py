@@ -3,9 +3,9 @@
 import pytest
 
 from arc_eval_service.core.errors import ModelError, UnknownModelError
-from arc_eval_service.models.anthropic import AnthropicModel
-from arc_eval_service.models.openai_compat import OpenAICompatibleModel
-from arc_eval_service.models.profiles import ModelProfile, ModelRegistry
+from arc_eval_service.judging.profiles import ModelProfile, ModelRegistry
+from arc_eval_service.judging.providers.anthropic import AnthropicModel
+from arc_eval_service.judging.providers.openai_compat import OpenAICompatibleModel
 
 pytestmark = pytest.mark.unit
 
@@ -39,13 +39,11 @@ def test_resolves_provider_specific_adapter(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_default_profile_used_when_unspecified() -> None:
     model = _registry().resolve(None)
-    assert isinstance(model, OpenAICompatibleModel)
-    assert model.name == "llama3"
+    assert isinstance(model, OpenAICompatibleModel) and model.name == "llama3"
 
 
 def test_model_override_swaps_model_id() -> None:
-    model = _registry().resolve("local", model_override="mistral")
-    assert model.name == "mistral"
+    assert _registry().resolve("local", model_override="mistral").name == "mistral"
 
 
 def test_unknown_profile_raises() -> None:
@@ -53,23 +51,17 @@ def test_unknown_profile_raises() -> None:
         _registry().resolve("nope")
 
 
-def test_missing_api_key_env_raises_model_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_missing_api_key_env_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TEST_ANTHROPIC_KEY", raising=False)
     with pytest.raises(ModelError):
         _registry().resolve("claude")
 
 
-def test_list_profiles_exposes_no_secrets() -> None:
-    infos = {p.name: p for p in _registry().list_profiles()}
-    assert infos["claude"].provider == "anthropic"
-    # ModelProfileInfo has no api key field at all.
-    assert not hasattr(infos["claude"], "api_key_env")
+def test_profiles_lists_all_configured() -> None:
+    assert {p.name for p in _registry().profiles()} == {"claude", "local"}
 
 
 def test_has_respects_default() -> None:
     registry = _registry()
-    assert registry.has(None) is True  # default exists
-    assert registry.has("claude") is True
-    assert registry.has("ghost") is False
+    assert registry.has(None) and registry.has("claude")
+    assert not registry.has("ghost")

@@ -1,0 +1,40 @@
+name: arc-eval-service
+
+# Brings up Postgres (the database this service depends on) and the eval-service
+# itself. The service runs `alembic upgrade head` before serving, so the schema
+# is always current. For local development against `make run`, start just the
+# database with `docker compose up db`.
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: arc
+      POSTGRES_PASSWORD: arc
+      POSTGRES_DB: arc_eval
+    ports:
+      - "5432:5432"
+    volumes:
+      - arc-eval-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arc -d arc_eval"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  eval-service:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ARC_EVAL_DATABASE_URL: postgresql+psycopg://arc:arc@db:5432/arc_eval
+    ports:
+      - "8000:8000"
+    command:
+      - sh
+      - -c
+      - alembic upgrade head && uvicorn arc_eval_service.app:app --host 0.0.0.0 --port 8000
+
+volumes:
+  arc-eval-db:

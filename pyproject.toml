@@ -139,7 +139,10 @@ max-args = 8
 max-complexity = 12
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**/*.py" = ["S101", "ANN", "PLR2004", "INP001", "BLE001"]
+# Tests defer heavy imports into fixtures (PLC0415) to keep pure-logic unit tests
+# decoupled from the app/telemetry stack, and favour readable compound assertions
+# (PT018) over ceremony.
+"**/tests/**/*.py" = ["S101", "ANN", "PLR2004", "INP001", "BLE001", "PLC0415", "PT018"]
 
 [tool.coverage.run]
 source = ["src"]

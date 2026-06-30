@@ -29,7 +29,7 @@ lint: prepare
 
 .PHONY: openapi ## Export the OpenAPI schema to openapi.json
 openapi: prepare
-	uv run python -c "import json; from $(APP).api.main import app; \
+	uv run python -c "import json; from $(APP).app import app; \
 print(json.dumps(app.openapi(), indent=2))" > openapi.json
 	@echo "OpenAPI schema written to openapi.json"
 
@@ -78,7 +78,7 @@ downgrade: prepare
 
 .PHONY: run ## Run the main application locally with auto-reload
 run: prepare
-	uv run uvicorn $(APP).api.main:app --reload --reload-dir src --host 0.0.0.0 --port 8000
+	uv run uvicorn $(APP).app:app --reload --reload-dir src --host 0.0.0.0 --port 8000
 
 .PHONY: clean ## Remove all temporary files
 clean:

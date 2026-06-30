@@ -38,14 +38,12 @@ WORKDIR /srv
 
 COPY --from=builder /srv /srv
 
-# Migration assets + entrypoint: the container runs `alembic upgrade head` on
-# boot (when a database is configured) so the schema is always current.
+# Migration assets: the compose stack runs `alembic upgrade head` before serving
+# so the schema is always current. Run standalone, the service expects an
+# already-migrated database (see docker-compose.yaml).
 COPY alembic.ini ./
 COPY migrations ./migrations
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 8000
 
-ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["uvicorn", "arc_eval_service.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "arc_eval_service.app:app", "--host", "0.0.0.0", "--port", "8000"]

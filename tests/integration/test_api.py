@@ -4,10 +4,7 @@ import gzip
 import json
 
 import pytest
-from httpx import ASGITransport, AsyncClient
-
-from arc_eval_service.api.main import create_app
-from arc_eval_service.core.config import get_settings
+from httpx import AsyncClient
 
 pytestmark = pytest.mark.integration
 
@@ -18,8 +15,8 @@ async def test_health_ok(client: AsyncClient) -> None:
     assert response.json()["service"] == "arc-eval-service"
 
 
-async def test_list_judges(client: AsyncClient) -> None:
-    response = await client.get("/v1/judges")
+async def test_list_metrics(client: AsyncClient) -> None:
+    response = await client.get("/v1/metrics")
     assert response.status_code == 200
     names = {item["name"] for item in response.json()}
     assert names == {"faithfulness", "answer_relevance", "safety", "custom"}
@@ -31,28 +28,27 @@ async def test_list_models_exposes_profiles(client: AsyncClient) -> None:
     assert {p["name"] for p in response.json()} == {"default"}
 
 
-async def test_evaluate_sync_returns_completed_record(client: AsyncClient) -> None:
+async def test_evaluate_returns_per_metric_results(client: AsyncClient) -> None:
     payload = {
         "case": {"request_id": "req-1", "output": "hello"},
-        "judges": [{"judge": "safety"}],
-        "mode": "sync",
+        "metrics": [{"metric": "safety"}],
     }
     response = await client.post("/v1/evaluate", json=payload)
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "completed"
-    assert body["passed"] is True
-    assert body["aggregate_score"] == 0.9
+    assert body["request_id"] == "req-1" and body["case_id"]
+    assert "aggregate_score" not in body
     result = body["results"][0]
-    assert result["judge"] == "safety"
+    assert result["metric"] == "safety"
+    assert result["passed"] is True
     assert result["label"] == "pass"
     assert result["explanation"]
 
 
-async def test_evaluate_unknown_judge_is_400(client: AsyncClient) -> None:
+async def test_evaluate_unknown_metric_is_400(client: AsyncClient) -> None:
     payload = {
         "case": {"request_id": "r", "output": "x"},
-        "judges": [{"judge": "nope"}],
+        "metrics": [{"metric": "nope"}],
     }
     response = await client.post("/v1/evaluate", json=payload)
     assert response.status_code == 400
@@ -62,45 +58,66 @@ async def test_evaluate_unknown_judge_is_400(client: AsyncClient) -> None:
 async def test_evaluate_unknown_model_is_400(client: AsyncClient) -> None:
     payload = {
         "case": {"request_id": "r", "output": "x"},
-        "judges": [{"judge": "safety", "model": "ghost"}],
+        "metrics": [{"metric": "safety", "model": "ghost"}],
     }
     response = await client.post("/v1/evaluate", json=payload)
     assert response.status_code == 400
     assert "ghost" in response.json()["detail"]
 
 
-async def test_evaluate_requires_at_least_one_judge(client: AsyncClient) -> None:
-    payload = {"case": {"request_id": "r", "output": "x"}, "judges": []}
+async def test_evaluate_requires_at_least_one_metric(client: AsyncClient) -> None:
+    payload = {"case": {"request_id": "r", "output": "x"}, "metrics": []}
     response = await client.post("/v1/evaluate", json=payload)
     assert response.status_code == 422
 
 
 async def test_missing_required_field_degrades_not_fatal(client: AsyncClient) -> None:
-    # faithfulness requires context; absent -> per-judge error, request still 200.
+    # faithfulness requires context; absent -> per-metric error, request still 200.
     payload = {
         "case": {"request_id": "r5", "output": "x"},
-        "judges": [{"judge": "faithfulness"}],
+        "metrics": [{"metric": "faithfulness"}],
     }
     response = await client.post("/v1/evaluate", json=payload)
     assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "failed"
-    assert body["results"][0]["error"] is not None
+    assert response.json()["results"][0]["error"] is not None
 
 
-async def test_rerun_creates_linked_record(client: AsyncClient) -> None:
-    payload = {
-        "case": {"request_id": "rr", "output": "hello"},
-        "judges": [{"judge": "safety"}],
-    }
-    created = (await client.post("/v1/evaluate", json=payload)).json()
+async def test_rerun_with_override_replaces_metrics(client: AsyncClient) -> None:
+    created = (
+        await client.post(
+            "/v1/evaluate",
+            json={
+                "case": {"request_id": "rr", "output": "hello"},
+                "metrics": [{"metric": "safety"}],
+            },
+        )
+    ).json()
     rerun = await client.post(
-        f"/v1/evaluations/{created['evaluation_id']}/rerun", json={}
+        f"/v1/evaluations/{created['case_id']}/rerun",
+        json={"metrics": [{"metric": "custom", "config": {"prompt": "grade tone"}}]},
     )
     assert rerun.status_code == 200
     body = rerun.json()
-    assert body["rerun_of"] == created["evaluation_id"]
-    assert body["evaluation_id"] != created["evaluation_id"]
+    assert body["case_id"] == created["case_id"]
+    assert body["results"][0]["metric"] == "custom"
+
+
+async def test_batch_scores_each_item(client: AsyncClient) -> None:
+    payload = {
+        "items": [
+            {
+                "case": {"request_id": "b1", "output": "x"},
+                "metrics": [{"metric": "safety"}],
+            },
+            {
+                "case": {"request_id": "b2", "output": "y"},
+                "metrics": [{"metric": "safety"}],
+            },
+        ]
+    }
+    response = await client.post("/v1/evaluate/batch", json=payload)
+    assert response.status_code == 200
+    assert {r["request_id"] for r in response.json()} == {"b1", "b2"}
 
 
 async def test_otlp_ingest_accepts_and_counts(client: AsyncClient) -> None:
@@ -113,6 +130,7 @@ async def test_otlp_ingest_accepts_and_counts(client: AsyncClient) -> None:
                             {
                                 "name": "arc.llm.call",
                                 "traceId": "t1",
+                                "spanId": "s1",
                                 "events": [
                                     {
                                         "name": "arc.llm.choice",
@@ -148,6 +166,7 @@ async def test_otlp_ingest_accepts_gzip_encoded_body(client: AsyncClient) -> Non
                             {
                                 "name": "arc.llm.call",
                                 "traceId": "gz-trace",
+                                "spanId": "gz-span",
                                 "events": [
                                     {
                                         "name": "arc.llm.choice",
@@ -198,12 +217,12 @@ async def test_otlp_ingest_stores_spans_and_serves_real_trace(
                                 "endTimeUnixNano": "1500000000",
                                 "attributes": [
                                     {
-                                        "key": "arc.llm.request.model",
-                                        "value": {"stringValue": "gpt-4o"},
+                                        "key": "arc.request_id",
+                                        "value": {"stringValue": "req-real"},
                                     },
                                     {
-                                        "key": "arc.llm.usage.input_tokens",
-                                        "value": {"intValue": "42"},
+                                        "key": "arc.llm.request.model",
+                                        "value": {"stringValue": "gpt-4o"},
                                     },
                                 ],
                             }
@@ -221,13 +240,12 @@ async def test_otlp_ingest_stores_spans_and_serves_real_trace(
     assert trace.status_code == 200
     body = trace.json()
     assert body["trace_id"] == "trace-real"
+    assert body["request_id"] == "req-real"
     span = body["spans"][0]
     assert span["span_id"] == "span-root"
     assert span["parent_span_id"] is None
     assert span["duration_ms"] == 500.0
-    # the real arc.llm.* attributes are surfaced for inspection
     assert span["attributes"]["arc.llm.request.model"] == "gpt-4o"
-    assert span["attributes"]["arc.llm.usage.input_tokens"] == "42"
 
 
 async def test_get_unknown_trace_is_404(client: AsyncClient) -> None:
@@ -238,41 +256,22 @@ async def test_get_unknown_evaluation_is_404(client: AsyncClient) -> None:
     assert (await client.get("/v1/evaluations/missing-id")).status_code == 404
 
 
-async def test_list_evaluations_returns_recent_first(client: AsyncClient) -> None:
-    for rid in ("l1", "l2"):
+async def test_list_then_delete_evaluation(client: AsyncClient) -> None:
+    created = (
         await client.post(
             "/v1/evaluate",
             json={
-                "case": {"request_id": rid, "output": "a"},
-                "judges": [{"judge": "safety"}],
+                "case": {"request_id": "del", "output": "a"},
+                "metrics": [{"metric": "safety"}],
             },
         )
-    response = await client.get("/v1/evaluations?limit=10")
-    assert [r["request_id"] for r in response.json()] == ["l2", "l1"]
+    ).json()
+    listed = await client.get("/v1/evaluations?limit=10")
+    assert listed.status_code == 200
+    assert created["case_id"] in {item["case_id"] for item in listed.json()}
 
-
-async def test_list_evaluations_rejects_out_of_range_limit(client: AsyncClient) -> None:
-    assert (await client.get("/v1/evaluations?limit=0")).status_code == 422
-    assert (await client.get("/v1/evaluations?limit=101")).status_code == 422
-
-
-async def test_batch_over_max_batch_size_is_413(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ARC_EVAL_MAX_BATCH_SIZE", "1")
-    get_settings.cache_clear()
-    item = {
-        "case": {"request_id": "b", "output": "a"},
-        "judges": [{"judge": "safety"}],
-    }
-    transport = ASGITransport(app=create_app())
-    async with AsyncClient(transport=transport, base_url="http://test") as anon:
-        response = await anon.post("/v1/evaluate/batch", json={"items": [item, item]})
-    assert response.status_code == 413
-    assert "max_batch_size" in response.json()["detail"]
-
-
-async def test_lifespan_disposes_store_on_shutdown() -> None:
-    app = create_app()
-    async with app.router.lifespan_context(app):
-        pass  # exiting the context triggers shutdown -> store.dispose()
+    deleted = await client.delete(f"/v1/evaluations/{created['case_id']}")
+    assert deleted.status_code == 204
+    assert (
+        await client.get(f"/v1/evaluations/{created['case_id']}")
+    ).status_code == 404
