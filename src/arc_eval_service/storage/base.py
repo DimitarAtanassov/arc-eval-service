@@ -35,6 +35,11 @@ class EvaluationStore(ABC):
         """Return up to ``limit`` records, most recently created first."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def delete(self, evaluation_id: str) -> None:
+        """Delete one record or raise :class:`NotFoundError` if it is absent."""
+        raise NotImplementedError
+
     async def dispose(self) -> None:
         """Release any held resources on shutdown.
 

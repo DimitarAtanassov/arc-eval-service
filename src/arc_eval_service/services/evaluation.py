@@ -154,6 +154,10 @@ class EvaluationService:
         """Return up to ``limit`` records, most recently created first."""
         return await self._store.list_recent(limit)
 
+    async def delete(self, evaluation_id: str) -> None:
+        """Delete a stored record or raise ``NotFoundError`` if it is absent."""
+        await self._store.delete(evaluation_id)
+
     def judges(self) -> list[JudgeInfo]:
         """Return discovery metadata for every registered judge."""
         return [

@@ -116,6 +116,13 @@ class PostgresEvaluationStore(EvaluationStore):
             rows = (await session.execute(stmt)).scalars().all()
         return [row_to_record(row) for row in rows]
 
+    async def delete(self, evaluation_id: str) -> None:
+        async with self._sessionmaker() as session, session.begin():
+            row = await session.get(EvaluationRow, evaluation_id)
+            if row is None:
+                raise NotFoundError("evaluation", evaluation_id)
+            await session.delete(row)
+
     async def dispose(self) -> None:
         """Dispose the engine's connection pool (call on shutdown)."""
         await self._engine.dispose()

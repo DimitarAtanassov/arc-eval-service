@@ -123,6 +123,16 @@ async def rerun_evaluation(
     return await service.rerun(evaluation_id, request.judges)
 
 
+@router.delete(
+    "/v1/evaluations/{evaluation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["evaluations"],
+)
+async def delete_evaluation(evaluation_id: str, service: ServiceDep) -> None:
+    """Delete a stored evaluation record (404 if it does not exist)."""
+    await service.delete(evaluation_id)
+
+
 @router.get("/v1/judges", response_model=list[JudgeInfo], tags=["discovery"])
 async def list_judges(service: ServiceDep) -> list[JudgeInfo]:
     """List the registered judges and what each requires."""

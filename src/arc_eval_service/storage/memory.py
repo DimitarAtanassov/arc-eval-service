@@ -42,3 +42,8 @@ class InMemoryEvaluationStore(EvaluationStore):
             records = list(self._records.values())
         records.sort(key=lambda r: r.created_at, reverse=True)
         return records[:limit]
+
+    async def delete(self, evaluation_id: str) -> None:
+        async with self._lock:
+            if self._records.pop(evaluation_id, None) is None:
+                raise NotFoundError("evaluation", evaluation_id)
