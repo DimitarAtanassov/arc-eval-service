@@ -15,6 +15,11 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from arc_eval_service.core.config import get_settings
+
+# Import the row-defining storage slices for their side effect: registering each
+# table on ``Base.metadata`` so autogenerate and ``--sql`` mode see every table.
+from arc_eval_service.storage import evaluation as _evaluation_storage  # noqa: F401
+from arc_eval_service.storage import spans as _spans_storage  # noqa: F401
 from arc_eval_service.storage.orm import Base
 
 config = context.config

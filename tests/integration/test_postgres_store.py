@@ -16,8 +16,8 @@ from arc_eval_service.schemas.models import (
     EvaluationStatus,
     ExecutionMode,
 )
+from arc_eval_service.storage.evaluation import PostgresEvaluationStore
 from arc_eval_service.storage.orm import Base
-from arc_eval_service.storage.postgres import PostgresEvaluationStore
 
 pytestmark = pytest.mark.integration
 

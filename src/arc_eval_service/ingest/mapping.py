@@ -1,26 +1,18 @@
-"""OTel offline ingestion (inbound adapter).
+"""Pure OTLP -> domain mapping (functional core).
 
-The gateway emits content-bearing LLM spans; the collector fans every span out to
-this service as OTLP/HTTP **JSON**. We parse the subset we need (no proto
-dependency) for two orthogonal purposes:
+Two pure functions over a parsed :class:`OTLPTracePayload`:
 
-1. **Span store** -- every addressable span is normalised into a
-   :class:`SpanRecord` and persisted (idempotent upsert keyed on ``span_id``), so
-   the control plane can render the *real* span tree with its ``arc.*``
-   attributes for both inference and evaluation traces.
-2. **Offline judging** -- ``arc.llm.call`` spans that carry a response are mapped
-   into :class:`EvaluationCase` objects and scheduled for LLM-as-a-judge scoring.
+* :func:`parse_spans` normalises every addressable span into a
+  :class:`SpanRecord` for the span store.
+* :func:`spans_to_cases` extracts the evaluable ``arc.llm.call`` interactions
+  into :class:`EvaluationCase` objects for offline judging.
 
-Both mappings are pure functions so they unit-test from a canned payload. Spans
-originating from this service itself are stored but never re-judged: the
-evaluator wraps its own judge calls in ``arc.llm.call`` spans, so judging them
-would feed the collector, which fans them back here -- an unbounded loop.
+No I/O, so both unit-test from a canned payload.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 from uuid import uuid4
 
 from arc_telemetry.conventions import (
@@ -31,96 +23,15 @@ from arc_telemetry.conventions import (
     SpanNames,
 )
 from arc_telemetry.tracing.llm import Role
-from pydantic import BaseModel, ConfigDict, Field
-from pydantic.alias_generators import to_camel
 
-from arc_eval_service.schemas.models import (
-    EvaluationCase,
-    EvaluationRequest,
-    JudgeSpec,
-    SpanRecord,
+from arc_eval_service.ingest.wire import (
+    OTLPTracePayload,
+    _AnyValue,
+    _KeyValue,
+    _Resource,
+    _Span,
 )
-from arc_eval_service.services.evaluation import EvaluationService
-from arc_eval_service.storage.spans import SpanStore
-
-logger = logging.getLogger("arc_eval_service.ingest.otlp")
-
-
-# --- OTLP/HTTP JSON subset (camelCase via alias generator) ----------------
-
-
-class _OTLPBase(BaseModel):
-    model_config = ConfigDict(
-        alias_generator=to_camel, populate_by_name=True, extra="ignore"
-    )
-
-
-class _ArrayValue(_OTLPBase):
-    values: list[_AnyValue] = Field(default_factory=list)
-
-
-class _KeyValueList(_OTLPBase):
-    values: list[_KeyValue] = Field(default_factory=list)
-
-
-class _AnyValue(_OTLPBase):
-    """An OTLP ``AnyValue`` -- only one field is set per the proto-JSON oneof."""
-
-    string_value: str | None = None
-    bool_value: bool | None = None
-    # int64 is encoded as a JSON string in proto3 JSON; accept either form.
-    int_value: int | str | None = None
-    double_value: float | None = None
-    array_value: _ArrayValue | None = None
-    kvlist_value: _KeyValueList | None = None
-
-
-class _KeyValue(_OTLPBase):
-    key: str
-    value: _AnyValue = Field(default_factory=_AnyValue)
-
-
-class _Event(_OTLPBase):
-    name: str = ""
-    attributes: list[_KeyValue] = Field(default_factory=list)
-
-
-class _Span(_OTLPBase):
-    name: str = ""
-    trace_id: str | None = None
-    span_id: str | None = None
-    parent_span_id: str | None = None
-    kind: int | str | None = None
-    start_time_unix_nano: int | str | None = None
-    end_time_unix_nano: int | str | None = None
-    attributes: list[_KeyValue] = Field(default_factory=list)
-    events: list[_Event] = Field(default_factory=list)
-
-
-class _Resource(_OTLPBase):
-    attributes: list[_KeyValue] = Field(default_factory=list)
-
-
-class _ScopeSpans(_OTLPBase):
-    spans: list[_Span] = Field(default_factory=list)
-
-
-class _ResourceSpans(_OTLPBase):
-    resource: _Resource = Field(default_factory=_Resource)
-    scope_spans: list[_ScopeSpans] = Field(default_factory=list)
-
-
-class OTLPTracePayload(_OTLPBase):
-    """The OTLP/HTTP traces export envelope (the subset we read)."""
-
-    resource_spans: list[_ResourceSpans] = Field(default_factory=list)
-
-
-# Resolve the forward references created by the recursive ``AnyValue`` oneof.
-_ArrayValue.model_rebuild()
-_KeyValueList.model_rebuild()
-_AnyValue.model_rebuild()
-
+from arc_eval_service.schemas.models import EvaluationCase, SpanRecord
 
 # --- pure value coercion --------------------------------------------------
 
@@ -279,55 +190,3 @@ def spans_to_cases(
                     )
                 )
     return cases
-
-
-# --- service (imperative shell) -------------------------------------------
-
-
-class OfflineIngestService:
-    """Stores ingested spans and judges evaluable cases offline (best-effort)."""
-
-    def __init__(
-        self,
-        *,
-        evaluation: EvaluationService,
-        spans: SpanStore,
-        self_service_name: str,
-        default_judge: str,
-        default_model: str | None,
-    ) -> None:
-        self._evaluation = evaluation
-        self._spans = spans
-        self._self_service_name = self_service_name
-        self._default_judge = default_judge
-        self._default_model = default_model
-
-    def parse(
-        self, payload: OTLPTracePayload
-    ) -> tuple[list[SpanRecord], list[EvaluationCase]]:
-        """Return the persistable spans and evaluable cases in ``payload`` (pure)."""
-        spans = parse_spans(payload)
-        cases = spans_to_cases(payload, self_service_name=self._self_service_name)
-        return spans, cases
-
-    async def store(self, spans: list[SpanRecord]) -> None:
-        """Persist spans (idempotent upsert); never fail the request on store."""
-        if not spans:
-            return
-        try:
-            await self._spans.upsert_many(spans)
-        except Exception:
-            logger.exception("span store failed", extra={"spans": len(spans)})
-
-    async def run(self, cases: list[EvaluationCase]) -> None:
-        """Judge each case offline; isolate failures so one bad case is contained."""
-        spec = JudgeSpec(judge=self._default_judge, model=self._default_model)
-        for case in cases:
-            try:
-                await self._evaluation.evaluate(
-                    EvaluationRequest(case=case, judges=[spec])
-                )
-            except Exception:
-                logger.exception(
-                    "offline evaluation failed", extra={"request_id": case.request_id}
-                )

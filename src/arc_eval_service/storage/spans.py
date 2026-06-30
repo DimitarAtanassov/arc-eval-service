@@ -1,11 +1,11 @@
 """Persistence for normalised OTel spans (the trace store).
 
-Separate from :class:`~arc_eval_service.storage.base.EvaluationStore` because
-spans are a different aggregate with a different lifecycle: they arrive from the
-collector out of order, are written far more often than they are read, and are
-keyed on ``span_id`` for idempotent upserts. Keeping the contract self-contained
-here makes it cheap to extract into a dedicated telemetry store later (see
-ADR-0006) without disturbing the evaluation path.
+Separate from :class:`~arc_eval_service.storage.evaluation.EvaluationStore`
+because spans are a different aggregate with a different lifecycle: they arrive
+from the collector out of order, are written far more often than they are read,
+and are keyed on ``span_id`` for idempotent upserts. Keeping this slice
+self-contained makes it cheap to extract into a dedicated telemetry store later
+(see ADR-0006) without disturbing the evaluation path.
 
 The row <-> record mapping is kept in pure functions so it unit-tests without a
 live database.
@@ -15,17 +15,43 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
+from datetime import datetime
 
-from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import BigInteger, DateTime, String, func, select
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import Mapped, mapped_column
 
 from arc_eval_service.schemas.models import SpanRecord
-from arc_eval_service.storage.orm import SpanRow
+from arc_eval_service.storage.orm import Base
+
+
+class SpanRow(Base):
+    """Row representation of one normalised OTel span (:class:`SpanRecord`).
+
+    Keyed on ``span_id`` so ingest is an idempotent upsert: the collector may
+    redeliver a span, and children may arrive before parents, without corrupting
+    the tree. ``trace_id`` is indexed because reads fetch a whole trace at once.
+    """
+
+    __tablename__ = "spans"
+
+    span_id: Mapped[str] = mapped_column(String, primary_key=True)
+    trace_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    parent_span_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    service_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    kind: Mapped[str | None] = mapped_column(String, nullable=True)
+    start_unix_nano: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    end_unix_nano: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    attributes: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
 
 
 class SpanStore(ABC):

@@ -2,7 +2,7 @@
 
 import pytest
 
-from arc_eval_service.ingest.otlp import (
+from arc_eval_service.ingest import (
     OTLPTracePayload,
     parse_spans,
     spans_to_cases,
@@ -105,7 +105,10 @@ def _resource_payload(
                 {
                     "resource": {
                         "attributes": [
-                            {"key": "service.name", "value": {"stringValue": service_name}}
+                            {
+                                "key": "service.name",
+                                "value": {"stringValue": service_name},
+                            }
                         ]
                     },
                     "scopeSpans": [{"spans": spans}],

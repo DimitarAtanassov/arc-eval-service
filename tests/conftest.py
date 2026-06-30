@@ -17,9 +17,10 @@ from arc_eval_service.api.main import create_app
 from arc_eval_service.core import deps
 from arc_eval_service.core.config import get_settings
 from arc_eval_service.core.errors import ModelError, UnknownModelError
-from arc_eval_service.ingest.otlp import OfflineIngestService
+from arc_eval_service.ingest import OfflineIngestService
 from arc_eval_service.models.base import JudgeModel, ModelCompletion, ModelSettings
 from arc_eval_service.models.profiles import ModelProfile, ModelRegistry
+from arc_eval_service.services.discovery import DiscoveryService
 from arc_eval_service.services.evaluation import EvaluationService
 
 GOOD_VERDICT = '{"score": 0.9, "label": "pass", "explanation": "looks good"}'
@@ -93,6 +94,9 @@ async def client() -> AsyncIterator[AsyncClient]:
     """An httpx AsyncClient bound to the ASGI app, judging on a stub model."""
     app = create_app()
     app.dependency_overrides[deps.get_evaluation_service] = stub_service
+    app.dependency_overrides[deps.get_discovery_service] = lambda: DiscoveryService(
+        judges=deps.get_judges(), models=StubModelRegistry()
+    )
     app.dependency_overrides[deps.get_offline_ingest_service] = lambda: (
         OfflineIngestService(
             evaluation=stub_service(),

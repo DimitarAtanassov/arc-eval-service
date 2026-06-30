@@ -12,7 +12,7 @@ from arc_eval_service.schemas.models import (
     ExecutionMode,
     JudgeSpec,
 )
-from arc_eval_service.storage.postgres import (
+from arc_eval_service.storage.evaluation import (
     apply_record,
     record_to_row,
     row_to_record,

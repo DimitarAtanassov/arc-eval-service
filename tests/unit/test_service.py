@@ -13,7 +13,7 @@ from arc_eval_service.schemas.models import (
     JudgeSpec,
 )
 from arc_eval_service.services.evaluation import EvaluationService
-from arc_eval_service.storage.memory import InMemoryEvaluationStore
+from arc_eval_service.storage.evaluation import InMemoryEvaluationStore
 
 pytestmark = pytest.mark.unit
 

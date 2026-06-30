@@ -10,14 +10,17 @@ from __future__ import annotations
 from functools import lru_cache
 
 from arc_eval_service.core.config import get_settings
-from arc_eval_service.ingest.otlp import OfflineIngestService
+from arc_eval_service.ingest import OfflineIngestService
 from arc_eval_service.judges.registry import JudgeRegistry, default_registry
 from arc_eval_service.models.profiles import ModelRegistry
+from arc_eval_service.services.discovery import DiscoveryService
 from arc_eval_service.services.evaluation import EvaluationService
 from arc_eval_service.services.traces import TraceService
-from arc_eval_service.storage.base import EvaluationStore
-from arc_eval_service.storage.memory import InMemoryEvaluationStore
-from arc_eval_service.storage.postgres import PostgresEvaluationStore
+from arc_eval_service.storage.evaluation import (
+    EvaluationStore,
+    InMemoryEvaluationStore,
+    PostgresEvaluationStore,
+)
 from arc_eval_service.storage.spans import (
     InMemorySpanStore,
     PostgresSpanStore,
@@ -68,6 +71,11 @@ def get_evaluation_service() -> EvaluationService:
     return EvaluationService(
         store=get_store(), judges=get_judges(), models=get_models()
     )
+
+
+def get_discovery_service() -> DiscoveryService:
+    """Return a :class:`DiscoveryService` over the judge + model registries."""
+    return DiscoveryService(judges=get_judges(), models=get_models())
 
 
 def get_trace_service() -> TraceService:

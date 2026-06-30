@@ -27,11 +27,12 @@ from arc_eval_service.api.schemas import (
 )
 from arc_eval_service.core.config import Settings, get_settings
 from arc_eval_service.core.deps import (
+    get_discovery_service,
     get_evaluation_service,
     get_offline_ingest_service,
     get_trace_service,
 )
-from arc_eval_service.ingest.otlp import OfflineIngestService, OTLPTracePayload
+from arc_eval_service.ingest import OfflineIngestService, OTLPTracePayload
 from arc_eval_service.schemas.models import (
     EvaluationRecord,
     ExecutionMode,
@@ -39,12 +40,14 @@ from arc_eval_service.schemas.models import (
     ModelProfileInfo,
     Trace,
 )
+from arc_eval_service.services.discovery import DiscoveryService
 from arc_eval_service.services.evaluation import EvaluationService
 from arc_eval_service.services.traces import TraceService
 
 router = APIRouter()
 
 ServiceDep = Annotated[EvaluationService, Depends(get_evaluation_service)]
+DiscoveryDep = Annotated[DiscoveryService, Depends(get_discovery_service)]
 IngestDep = Annotated[OfflineIngestService, Depends(get_offline_ingest_service)]
 TraceDep = Annotated[TraceService, Depends(get_trace_service)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -134,15 +137,15 @@ async def delete_evaluation(evaluation_id: str, service: ServiceDep) -> None:
 
 
 @router.get("/v1/judges", response_model=list[JudgeInfo], tags=["discovery"])
-async def list_judges(service: ServiceDep) -> list[JudgeInfo]:
+async def list_judges(discovery: DiscoveryDep) -> list[JudgeInfo]:
     """List the registered judges and what each requires."""
-    return service.judges()
+    return discovery.judges()
 
 
 @router.get("/v1/models", response_model=list[ModelProfileInfo], tags=["discovery"])
-async def list_models(service: ServiceDep) -> list[ModelProfileInfo]:
+async def list_models(discovery: DiscoveryDep) -> list[ModelProfileInfo]:
     """List the configured model profiles (no secrets)."""
-    return service.model_profiles()
+    return discovery.model_profiles()
 
 
 @router.post(
