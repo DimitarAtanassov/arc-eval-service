@@ -17,12 +17,10 @@ def new_input_to_row(item: NewEvalInput) -> EvalInputRow:
     """Map a new eval input to its row (``created_at`` is stamped by the database)."""
     return EvalInputRow(
         id=item.id,
-        prompt_template_id=item.prompt_template_id,
-        template_context=item.template_context,
         rendered_prompt=item.rendered_prompt,
         system_message=item.system_message,
-        llm_response=item.llm_response,
-        llm_config=item.llm_config,
+        model_response=item.response,
+        model_config=item.config,
     )
 
 
@@ -30,12 +28,10 @@ def row_to_input(row: EvalInputRow) -> EvalInput:
     """Map an eval-input row back to its domain model."""
     return EvalInput(
         id=row.id,
-        prompt_template_id=row.prompt_template_id,
-        template_context=row.template_context,
         rendered_prompt=row.rendered_prompt,
         system_message=row.system_message,
-        llm_response=row.llm_response,
-        llm_config=row.llm_config,
+        response=row.model_response,
+        config=row.model_config,
         created_at=row.created_at,
     )
 

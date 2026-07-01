@@ -27,5 +27,5 @@ ServiceDep = Annotated[IngestionService, Depends(get_ingestion_service)]
 async def create_eval_input(
     request: EvalInputRequest, service: ServiceDep
 ) -> EvalInputResponse:
-    """Store one LLM interaction: prompt template, inputs, response and config."""
+    """Store one LLM interaction: rendered prompt, system message, response and config."""
     return await service.record(request)

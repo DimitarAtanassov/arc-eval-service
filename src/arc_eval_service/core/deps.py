@@ -12,10 +12,7 @@ from functools import lru_cache
 
 from arc_eval_service.core.config import get_settings
 from arc_eval_service.db.engine import Database
-from arc_eval_service.db.repositories import (
-    EvalInputRepository,
-    PromptTemplateRepository,
-)
+from arc_eval_service.db.repositories import EvalInputRepository
 from arc_eval_service.ingestion.service import IngestionService
 
 
@@ -29,17 +26,10 @@ def get_database() -> Database:
     return Database(url)
 
 
-def get_prompt_template_repository() -> PromptTemplateRepository:
-    return PromptTemplateRepository(get_database().sessionmaker)
-
-
 def get_eval_input_repository() -> EvalInputRepository:
     return EvalInputRepository(get_database().sessionmaker)
 
 
 def get_ingestion_service() -> IngestionService:
-    """Return an :class:`IngestionService` wired to its repositories."""
-    return IngestionService(
-        templates=get_prompt_template_repository(),
-        inputs=get_eval_input_repository(),
-    )
+    """Return an :class:`IngestionService` wired to its repository."""
+    return IngestionService(inputs=get_eval_input_repository())

@@ -9,6 +9,5 @@ not editing the others.
 from __future__ import annotations
 
 from arc_eval_service.db.repositories.eval_inputs import EvalInputRepository
-from arc_eval_service.db.repositories.prompt_templates import PromptTemplateRepository
 
-__all__ = ["EvalInputRepository", "PromptTemplateRepository"]
+__all__ = ["EvalInputRepository"]

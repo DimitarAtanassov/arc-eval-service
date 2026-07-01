@@ -16,7 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
 
 # Truncated child-first; CASCADE covers the foreign keys either way.
-_TABLES = ("evaluation_runs", "eval_inputs", "metrics", "prompt_templates")
+_TABLES = ("evaluation_runs", "eval_inputs", "metrics")
 
 
 @pytest.fixture(scope="session")

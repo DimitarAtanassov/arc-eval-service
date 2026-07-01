@@ -14,9 +14,8 @@ Postgres.
 ## What it does
 
 - Accepts one LLM interaction over a single endpoint and stores it.
-- Stores the prompt template once per distinct template (it deduplicates).
-- Stores the rendered prompt, the values that filled the template, the system
-  message, the LLM response, and the LLM config.
+- Stores the rendered prompt, the system message, the model response, and the
+  model config.
 
 ## What it does not do
 
@@ -30,33 +29,25 @@ Postgres.
 POST /v1/eval-inputs
 ```
 
-Send one LLM interaction. The service stores the template (deduplicated) and the
-input, then returns the two ids.
+Send one LLM interaction. The service stores the input and returns its id.
 
 ```jsonc
 // request
 {
-  "prompt_template": "Answer using the context.\nQ: {question}\nContext: {context}",
-  "template_context": {
-    "question": "What is the capital of France?",
-    "context": "The capital of France is Paris."
-  },
   "rendered_prompt": "Answer using the context.\nQ: What is the capital of France?\nContext: The capital of France is Paris.",
   "system_message": "You are a careful assistant.",
-  "llm_response": { "role": "assistant", "content": "Paris." },
-  "llm_config": { "model": "gpt-4o", "temperature": 0.0 }
+  "model_response": { "role": "assistant", "content": "Paris." },
+  "model_config": { "model": "gpt-4o", "temperature": 0.0 }
 }
 
 // 201 Created
 {
-  "eval_input_id": "0f2b9a3e-...",
-  "prompt_template_id": "7c1d4f88-..."
+  "eval_input_id": "0f2b9a3e-..."
 }
 ```
 
-`prompt_template` and `rendered_prompt` are required. A request that omits them
-is rejected with `422`. Sending the same `prompt_template` again returns the same
-`prompt_template_id`; the template row is stored once.
+`rendered_prompt` and `model_response` are required. A request that omits either
+is rejected with `422`.
 
 The only other route is `GET /health`, a liveness check.
 
@@ -64,33 +55,21 @@ The only other route is `GET /health`, a liveness check.
 
 ```mermaid
 erDiagram
-    prompt_templates ||--o{ eval_inputs : "rendered into"
-    prompt_templates ||--o{ metrics : "optional ref"
     eval_inputs ||--o{ evaluation_runs : "evaluated by"
     metrics ||--o{ evaluation_runs : "scored with"
 
-    prompt_templates {
-        uuid id PK
-        text template
-        text content_hash UK
-        timestamptz created_at
-    }
     eval_inputs {
         uuid id PK
-        uuid prompt_template_id FK
-        jsonb template_context
         text rendered_prompt
         text system_message
-        jsonb llm_response
-        jsonb llm_config
+        jsonb model_response
+        jsonb model_config
         timestamptz created_at
     }
     metrics {
         uuid id PK
         text name UK
         text prompt
-        uuid prompt_template_id FK
-        jsonb input_variables
         timestamptz created_at
     }
     evaluation_runs {
@@ -100,28 +79,21 @@ erDiagram
         jsonb judge_config
         float score
         bool passed
-        text label
         text explanation
-        text error
         timestamptz created_at
     }
 ```
 
-- `prompt_templates`: the raw template with placeholders. A `content_hash` unique
-  index keeps one row per distinct template, so a template that arrives on every
-  request is stored once.
-- `eval_inputs`: the interaction to evaluate. It links to its template, holds the
-  context key and value pairs (placeholder to value), the rendered prompt, the
-  system message, the LLM response, and the LLM config.
-- `metrics`: a metric definition. A name, plus an optional inline `prompt` or an
-  optional template reference with its `input_variables`.
+- `eval_inputs`: the interaction to evaluate. It holds the rendered prompt, the
+  system message, the model response, and the model config.
+- `metrics`: a metric definition. A unique name plus an optional inline `prompt`.
 - `evaluation_runs`: one metric run against one input. It links to the input and
-  the metric, holds the judge config used, and the result columns. The ingest
-  endpoint does not write this table.
+  the metric, holds the judge config used, and the result (score, pass/fail, and
+  explanation). The ingest endpoint does not write this table.
 
-The ingest endpoint writes `prompt_templates` and `eval_inputs` only. The
-`metrics` and `evaluation_runs` tables are the foundation for the evaluation
-logic that comes later.
+The ingest endpoint writes `eval_inputs` only. The `metrics` and
+`evaluation_runs` tables are the foundation for the evaluation logic that comes
+later.
 
 ## Project layout
 
@@ -135,12 +107,12 @@ src/arc_eval_service/
     logging.py      # JSON structured logging
   ingestion/        # the single endpoint
     schemas.py      # request, response, and domain models
-    service.py      # store the template (deduplicated), then the eval input
+    service.py      # store the eval input
     router.py       # POST /v1/eval-inputs
   db/
     engine.py       # async engine and session factory (Postgres only)
-    models.py       # the four tables
-    repositories/   # prompt_templates and eval_inputs, with pure row mappers
+    models.py       # the three tables
+    repositories/   # eval_inputs, with pure row mappers
   metrics/          # metric definitions library (kept for the evaluation logic)
   judging/          # judge model adapters and scoring engine (kept for later)
   evaluation/
@@ -166,8 +138,8 @@ All settings are read from `ARC_EVAL_*` environment variables.
 
 The service uses Postgres only. The database URL is required. Storage uses async
 SQLAlchemy 2.0 with psycopg3. The schema is managed by Alembic, applied with
-`make migrate`. There are four tables: `prompt_templates`, `eval_inputs`,
-`metrics`, and `evaluation_runs`.
+`make migrate`. There are three tables: `eval_inputs`, `metrics`, and
+`evaluation_runs`.
 
 ## Running locally
 
