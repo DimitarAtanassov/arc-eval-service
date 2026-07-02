@@ -152,6 +152,7 @@ async def test_scored_metrics_are_returned_and_mapped() -> None:
         "max_tokens": 1024,
         "system_prompt": "rubric for faithfulness\n\nRespond with JSON only.",
     }
+    assert faith_row.prompt is not None
     assert faith_row.prompt["template"] == "rubric for faithfulness"
     assert faith_row.prompt["variables"]["input"] == "the source article"
     assert faith_row.prompt["variables"]["output"] == "the summary"
@@ -185,7 +186,10 @@ async def test_errored_metrics_are_excluded_from_response_but_persisted() -> Non
     assert all(r.error == "no judge model" for r in results.created)
     # An errored metric has no judge provenance and a null prompt template.
     assert all(r.judge is None for r in results.created)
-    assert all(r.prompt["template"] is None for r in results.created)
+    assert all(
+        r.prompt is not None and r.prompt["template"] is None
+        for r in results.created
+    )
 
 
 async def test_persistence_failure_does_not_fail_the_request() -> None:
