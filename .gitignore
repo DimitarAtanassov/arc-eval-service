@@ -12,6 +12,11 @@ wheels/
 # Virtual environments
 .venv
 
+# Local environment files (may contain secrets); the template is tracked
+.env
+.env.*
+!.env.example
+
 # Tooling caches & artifacts
 .ruff_cache/
 .mypy_cache/

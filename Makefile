@@ -5,6 +5,12 @@ sources = src tests
 APP ?= arc_eval_service
 LOCAL_URL ?= http://127.0.0.1:8000
 
+# Load a local .env (copied from .env.example) into the recipe environment for
+# the runtime and migration targets, so a single file configures the app. An
+# absent .env is fine. Test and lint targets deliberately do not load it and
+# stay hermetic and reproducible.
+load-dotenv = set -a; [ -f .env ] && . ./.env; set +a
+
 .PHONY: help
 help:
 	@grep -E '^\.PHONY: .*?## .*$$' $(MAKEFILE_LIST) | \
@@ -64,25 +70,25 @@ audit: prepare
 
 .PHONY: migrate-check ## Apply migrations then roll back (validates up + down; needs ARC_EVAL_DATABASE_URL)
 migrate-check: prepare
-	uv run alembic upgrade head
-	uv run alembic downgrade base
-	uv run alembic upgrade head
+	$(load-dotenv); uv run alembic upgrade head
+	$(load-dotenv); uv run alembic downgrade base
+	$(load-dotenv); uv run alembic upgrade head
 
 .PHONY: migrate ## Apply database migrations to head (needs ARC_EVAL_DATABASE_URL)
 migrate: prepare
-	uv run alembic upgrade head
+	$(load-dotenv); uv run alembic upgrade head
 
 .PHONY: migration ## Autogenerate a migration (NAME=description, needs ARC_EVAL_DATABASE_URL)
 migration: prepare
-	uv run alembic revision --autogenerate -m "$(or $(NAME),change)"
+	$(load-dotenv); uv run alembic revision --autogenerate -m "$(or $(NAME),change)"
 
 .PHONY: downgrade ## Roll back the last migration (needs ARC_EVAL_DATABASE_URL)
 downgrade: prepare
-	uv run alembic downgrade -1
+	$(load-dotenv); uv run alembic downgrade -1
 
 .PHONY: run ## Run the main application locally with auto-reload
 run: prepare
-	uv run uvicorn $(APP).app:app --reload --reload-dir src --host 0.0.0.0 --port 8001
+	$(load-dotenv); uv run uvicorn $(APP).app:app --reload --reload-dir src --host 0.0.0.0 --port 8001
 
 .PHONY: clean ## Remove all temporary files
 clean:

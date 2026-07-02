@@ -27,13 +27,18 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Model profiles, the provider API key, and the other ARC_EVAL_* settings
+    # come from `.env` (copied from .env.example). It is optional, so the stack
+    # still starts without it; with no judge model configured, /v1/evaluate
+    # returns no scores (metrics error).
+    env_file:
+      - path: .env
+        required: false
     environment:
+      # Fixed to the compose network host: inside the stack the database is
+      # reached at `db`, not localhost. This overrides any ARC_EVAL_DATABASE_URL
+      # supplied by .env (which targets localhost for `make run`).
       ARC_EVAL_DATABASE_URL: postgresql+psycopg://arc:arc@db:5432/arc_eval
-      # To score with a real judge model, configure a profile and point the
-      # default at it. The API key is referenced by env-var name, never inlined:
-      #   ARC_EVAL_MODEL_PROFILES: '[{"name":"default","provider":"openai_compatible","model":"gpt-4o-mini","api_key_env":"OPENAI_API_KEY"}]'
-      #   ARC_EVAL_DEFAULT_MODEL: default
-      # With no profile configured, /v1/evaluate returns no scores (metrics error).
     ports:
       - "8000:8000"
     command:
