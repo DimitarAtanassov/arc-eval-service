@@ -82,7 +82,7 @@ downgrade: prepare
 
 .PHONY: run ## Run the main application locally with auto-reload
 run: prepare
-	uv run uvicorn $(APP).app:app --reload --reload-dir src --host 0.0.0.0 --port 8000
+	uv run uvicorn $(APP).app:app --reload --reload-dir src --host 0.0.0.0 --port 8001
 
 .PHONY: clean ## Remove all temporary files
 clean:
