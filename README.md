@@ -53,7 +53,9 @@ is rejected with `422`. The only other route is `GET /health`, a liveness check.
 
 - `task_type` selects the metrics. `summarization` runs `faithfulness` and
   `answer_relevance`. An unknown task type falls back to a default set. The
-  mapping lives in [policy.py](src/arc_eval_service/services/policy.py).
+  mapping lives in [policy.py](src/arc_eval_service/services/policy.py). A request
+  may instead name explicit `metrics` to score; an unknown metric name is rejected
+  with `404` before anything is scored or persisted.
 - Metric and judge prompts live in per-file YAML under
   [catalog/metric/](src/arc_eval_service/catalog/metric) and
   [catalog/judge/](src/arc_eval_service/catalog/judge), loaded and validated at
