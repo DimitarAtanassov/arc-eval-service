@@ -115,6 +115,24 @@ docker:
 docker-run: docker
 	docker run -p 8000:8000 -it arc-eval-service:latest
 
+.PHONY: db-up ## Start the Postgres database and wait until it is healthy
+db-up:
+	docker compose up -d --wait db
+
+.PHONY: db-down ## Stop and remove the database container (data volume kept)
+db-down:
+	docker compose down
+
+.PHONY: db-drop ## Stop the database and delete its data volume (destroys data)
+db-drop:
+	docker compose down -v
+
+.PHONY: db-reset ## Drop, recreate, and migrate the database (clean slate)
+db-reset:
+	$(MAKE) db-drop
+	$(MAKE) db-up
+	$(MAKE) migrate
+
 .PHONY: bump-version-major ## Bump the major version in pyproject.toml and uv.lock
 bump-version-major:
 	@echo "Bumping major version..."
