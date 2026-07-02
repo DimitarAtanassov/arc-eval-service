@@ -90,7 +90,7 @@ class EvaluationService:
         try:
             await self._requests.create(new_request)
             await self._results.create_many(new_results)
-        except Exception:  # noqa: BLE001 - observability write must not fail the request
+        except Exception:
             logger.exception(
                 "failed to persist evaluation",
                 extra={"eval_request_id": request_id},

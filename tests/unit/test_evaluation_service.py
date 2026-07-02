@@ -118,7 +118,10 @@ def _request(task_type: str = "summarization") -> EvaluateRequest:
 
 async def test_scored_metrics_are_returned_and_mapped() -> None:
     engine = _FakeEngine(
-        {"faithfulness": _ok("faithfulness"), "answer_relevance": _ok("answer_relevance")}
+        {
+            "faithfulness": _ok("faithfulness"),
+            "answer_relevance": _ok("answer_relevance"),
+        }
     )
     requests, results = _SpyRequestRepo(), _SpyResultRepo()
     service = _service(engine, requests=requests, results=results)
@@ -134,7 +137,10 @@ async def test_scored_metrics_are_returned_and_mapped() -> None:
     # One request row plus one result row per metric were persisted with the ids.
     assert len(requests.created) == 1
     assert requests.created[0].inference_id == "inf-1"
-    assert {r.metric_name for r in results.created} == {"faithfulness", "answer_relevance"}
+    assert {r.metric_name for r in results.created} == {
+        "faithfulness",
+        "answer_relevance",
+    }
     # Judge and prompt provenance are captured on each persisted result.
     faith_row = next(r for r in results.created if r.metric_name == "faithfulness")
     assert faith_row.judge == {
@@ -184,11 +190,17 @@ async def test_errored_metrics_are_excluded_from_response_but_persisted() -> Non
 
 async def test_persistence_failure_does_not_fail_the_request() -> None:
     engine = _FakeEngine(
-        {"faithfulness": _ok("faithfulness"), "answer_relevance": _ok("answer_relevance")}
+        {
+            "faithfulness": _ok("faithfulness"),
+            "answer_relevance": _ok("answer_relevance"),
+        }
     )
     service = _service(engine, requests=_FailingRequestRepo())
 
     response = await service.evaluate(_request())
 
     # Scores are still returned even though the observability write failed.
-    assert {r.metric_name for r in response.results} == {"faithfulness", "answer_relevance"}
+    assert {r.metric_name for r in response.results} == {
+        "faithfulness",
+        "answer_relevance",
+    }

@@ -11,7 +11,6 @@ subpackages.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TypeVar
 
 import yaml
 from pydantic import BaseModel
@@ -21,8 +20,6 @@ from arc_eval_service.catalog.metric.definition import MetricDefinition
 from arc_eval_service.domain.errors import UnknownJudgeError, UnknownMetricError
 
 _BUNDLED_ROOT = Path(__file__).parent
-
-_T = TypeVar("_T", bound=BaseModel)
 
 
 class Catalog(BaseModel):
@@ -58,9 +55,9 @@ def load_catalog(path: str | None = None) -> Catalog:
     )
 
 
-def _load_definitions(directory: Path, model: type[_T]) -> dict[str, _T]:
+def _load_definitions[T: BaseModel](directory: Path, model: type[T]) -> dict[str, T]:
     """Load and validate every ``*.yaml`` in ``directory``, keyed by filename stem."""
-    definitions: dict[str, _T] = {}
+    definitions: dict[str, T] = {}
     for file in sorted(directory.glob("*.yaml")):
         data = yaml.safe_load(file.read_text(encoding="utf-8"))
         definitions[file.stem] = model.model_validate(data)

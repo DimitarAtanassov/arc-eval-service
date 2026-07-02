@@ -56,7 +56,9 @@ async def test_evaluate_persists_request_and_results(
     finally:
         engine.dispose()
 
-    assert [(r.inference_id, r.task_type) for r in requests] == [("inf-1", "summarization")]
+    assert [(r.inference_id, r.task_type) for r in requests] == [
+        ("inf-1", "summarization")
+    ]
     assert {r.metric_name for r in results} == {"faithfulness", "answer_relevance"}
     assert all(r.error is None for r in results)
     assert all(r.inference_id == "inf-1" for r in results)
