@@ -6,19 +6,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from pydantic import BaseModel
 
+from arc_eval_service.api.dependencies import get_database
+from arc_eval_service.api.routes.evaluate import router as evaluate_router
+from arc_eval_service.api.routes.health import router as health_router
 from arc_eval_service.core.config import get_settings
-from arc_eval_service.core.deps import get_database
 from arc_eval_service.core.logging import configure_logging
-from arc_eval_service.evaluation.router import router as evaluation_router
-
-
-class HealthResponse(BaseModel):
-    """Liveness response."""
-
-    status: str = "ok"
-    service: str
 
 
 @asynccontextmanager
@@ -40,11 +33,8 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    @app.get("/health", response_model=HealthResponse, tags=["ops"])
-    async def health() -> HealthResponse:
-        return HealthResponse(status="ok", service=settings.service_name)
-
-    app.include_router(evaluation_router)
+    app.include_router(health_router)
+    app.include_router(evaluate_router)
     return app
 
 

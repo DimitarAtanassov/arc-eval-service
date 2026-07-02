@@ -1,34 +1,17 @@
 """Unit tests for judge-model provider adapters (HTTP mocked with respx)."""
 
+import json
+
 import httpx
 import pytest
 import respx
 
-from arc_eval_service.core.errors import ModelError
-from arc_eval_service.judging.model import ModelSettings
-from arc_eval_service.judging.providers.anthropic import AnthropicModel
+from arc_eval_service.domain.errors import ModelError
+from arc_eval_service.judging.ports import ModelSettings
 from arc_eval_service.judging.providers.openai_compat import OpenAICompatibleModel
+from arc_eval_service.judging.verdict import Verdict
 
 pytestmark = pytest.mark.unit
-
-
-@respx.mock
-async def test_anthropic_adapter_parses_text() -> None:
-    respx.post("https://api.anthropic.com/v1/messages").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "model": "claude-opus-4-8",
-                "content": [{"type": "text", "text": '{"score": 0.9}'}],
-                "usage": {"input_tokens": 10, "output_tokens": 4},
-            },
-        )
-    )
-    model = AnthropicModel(model="claude-opus-4-8", api_key="sk-test")
-    out = await model.complete(system="sys", prompt="hi", settings=ModelSettings())
-    assert out.text == '{"score": 0.9}'
-    assert out.model == "claude-opus-4-8"
-    assert out.input_tokens == 10
 
 
 @respx.mock
@@ -48,6 +31,29 @@ async def test_openai_compatible_honors_base_url() -> None:
     assert route.called
     assert out.text == '{"score": 0.5}'
     assert out.output_tokens == 3
+    # No structured-output request unless a schema is passed.
+    assert "response_format" not in json.loads(route.calls.last.request.content)
+
+
+@respx.mock
+async def test_openai_compatible_requests_structured_output() -> None:
+    route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "model": "gpt-4o",
+                "choices": [{"message": {"content": '{"score": 1}'}}],
+            },
+        )
+    )
+    model = OpenAICompatibleModel(model="gpt-4o", api_key="sk")
+    await model.complete(
+        system=None, prompt="hi", settings=ModelSettings(), response_schema=Verdict
+    )
+    fmt = json.loads(route.calls.last.request.content)["response_format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["json_schema"]["name"] == "verdict"
+    assert "score" in fmt["json_schema"]["schema"]["properties"]
 
 
 @respx.mock

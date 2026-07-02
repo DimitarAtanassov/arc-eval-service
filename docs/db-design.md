@@ -79,7 +79,7 @@ Denormalized (JSONB), not normalized (foreign keys), because:
   record of how that score was produced. A foreign key to a mutable `judges` or
   `prompt_templates` row would let a later edit change the meaning of a historical
   score.
-- Metrics and judges live in a YAML library (`prompts/`), not a database
+- Metrics and judges live in a YAML catalog (`catalog/`), not a database
   registry. A normalized table would have no second reader or writer yet.
 - Write volume is low; duplicating a small rubric string per row costs little.
 - JSONB lets the shape evolve (add `top_p`, `seed`, few-shot examples) without a
@@ -89,7 +89,7 @@ The input variables are stored as one JSONB object, not an entity-attribute-valu
 child table. EAV is an anti-pattern for the handful of structured, known fields a
 metric uses.
 
-Normalize later, when prompts and judges become first-class editable entities (a
+Normalize later, when metrics and judges become first-class editable entities (a
 registry with versions, A/B tests, per-template dashboards): extract
 `prompt_templates` and `judges`, reference them by id, and backfill.
 `evaluator_version` already gives a stable grouping key in the meantime.

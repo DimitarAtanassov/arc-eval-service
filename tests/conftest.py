@@ -14,10 +14,11 @@ from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import BaseModel
 from sqlalchemy import create_engine, text
 
-from arc_eval_service.judging.model import ModelCompletion, ModelSettings
-from arc_eval_service.judging.profiles import JudgeModel, ModelProfile, ModelRegistry
+from arc_eval_service.judging.ports import JudgeModel, ModelCompletion, ModelSettings
+from arc_eval_service.judging.profiles import ModelProfile, ModelRegistry
 
 # Truncated child-first; CASCADE covers the foreign key either way.
 _TABLES = ("evaluation_results", "eval_requests")
@@ -33,7 +34,12 @@ class _StubModel:
     name = "stub-judge"
 
     async def complete(
-        self, *, system: str | None, prompt: str, settings: ModelSettings
+        self,
+        *,
+        system: str | None,
+        prompt: str,
+        settings: ModelSettings,
+        response_schema: type[BaseModel] | None = None,
     ) -> ModelCompletion:
         return ModelCompletion(text=_STUB_VERDICT, model=self.name)
 
@@ -86,10 +92,10 @@ def database_url() -> Iterator[str]:
 
 def _reset_caches() -> None:
     """Clear cached singletons so each test rebuilds with the current env."""
-    from arc_eval_service.core import deps
+    from arc_eval_service.api import dependencies as deps
     from arc_eval_service.core.config import get_settings
 
-    for cache in (deps.get_database, deps.get_prompt_library, get_settings):
+    for cache in (deps.get_database, deps.get_catalog, get_settings):
         cache.cache_clear()
 
 
@@ -127,19 +133,19 @@ async def stub_client(clean_db: str) -> AsyncIterator[AsyncClient]:
     and database run, so the score -> persist -> respond path is exercised end to
     end without a network judge model.
     """
+    from arc_eval_service.api.dependencies import get_database, get_evaluation_service
     from arc_eval_service.app import create_app
-    from arc_eval_service.core.deps import get_database, get_evaluation_service
+    from arc_eval_service.catalog import load_catalog
     from arc_eval_service.db.repositories import (
         EvalRequestRepository,
         EvaluationResultRepository,
     )
-    from arc_eval_service.evaluation.service import EvaluationService
     from arc_eval_service.judging.engine import JudgeEngine
-    from arc_eval_service.prompts.loader import load_library
+    from arc_eval_service.services.evaluation_service import EvaluationService
 
     def _build_service() -> EvaluationService:
         database = get_database()
-        library = load_library()
+        library = load_catalog()
         engine = JudgeEngine(
             library=library, models=_StubModelRegistry(), default_judge="default"
         )

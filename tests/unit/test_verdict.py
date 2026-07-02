@@ -2,7 +2,7 @@
 
 import pytest
 
-from arc_eval_service.core.errors import EvaluationError
+from arc_eval_service.domain.errors import EvaluationError
 from arc_eval_service.judging.verdict import parse_verdict
 
 pytestmark = pytest.mark.unit

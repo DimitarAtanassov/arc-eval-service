@@ -11,22 +11,22 @@ from collections.abc import Sequence
 
 import pytest
 
+from arc_eval_service.api.schemas import EvaluateRequest, EvaluationMetadata
+from arc_eval_service.catalog import load_catalog
+from arc_eval_service.db.records import NewEvalRequest, NewEvaluationResult
 from arc_eval_service.db.repositories import (
     EvalRequestRepository,
     EvaluationResultRepository,
 )
-from arc_eval_service.evaluation.contract import EvaluateRequest, EvaluationMetadata
-from arc_eval_service.evaluation.records import NewEvalRequest, NewEvaluationResult
-from arc_eval_service.evaluation.schemas import EvaluationCase, EvaluationResult
-from arc_eval_service.evaluation.service import EvaluationService
+from arc_eval_service.domain.evaluation import EvaluationCase, MetricScore
 from arc_eval_service.judging.engine import JudgeEngine
-from arc_eval_service.prompts.loader import load_library
+from arc_eval_service.services.evaluation_service import EvaluationService
 
 pytestmark = pytest.mark.unit
 
 
-def _ok(metric: str, *, score: float = 0.9) -> EvaluationResult:
-    return EvaluationResult(
+def _ok(metric: str, *, score: float = 0.9) -> MetricScore:
+    return MetricScore(
         metric=metric,
         model="stub-judge",
         provider="openai_compatible",
@@ -45,8 +45,8 @@ def _ok(metric: str, *, score: float = 0.9) -> EvaluationResult:
     )
 
 
-def _errored(metric: str) -> EvaluationResult:
-    return EvaluationResult(
+def _errored(metric: str) -> MetricScore:
+    return MetricScore(
         metric=metric, score=0.0, passed=False, latency_ms=1.0, error="no judge model"
     )
 
@@ -54,7 +54,7 @@ def _errored(metric: str) -> EvaluationResult:
 class _FakeEngine(JudgeEngine):
     """Returns a canned result per metric; never calls a model."""
 
-    def __init__(self, results: dict[str, EvaluationResult]) -> None:
+    def __init__(self, results: dict[str, MetricScore]) -> None:
         self._results = results
 
     async def score(
@@ -64,7 +64,7 @@ class _FakeEngine(JudgeEngine):
         *,
         case_id: str,
         judge: str | None = None,
-    ) -> EvaluationResult:
+    ) -> MetricScore:
         return self._results[metric]
 
 
@@ -100,7 +100,7 @@ def _service(
 ) -> EvaluationService:
     return EvaluationService(
         engine=engine,
-        library=load_library(),
+        library=load_catalog(),
         requests=requests or _SpyRequestRepo(),
         results=results or _SpyResultRepo(),
     )

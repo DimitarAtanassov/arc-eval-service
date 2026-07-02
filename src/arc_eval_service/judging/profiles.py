@@ -16,12 +16,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from arc_eval_service.core.errors import ModelError, UnknownModelError
-from arc_eval_service.judging.model import JudgeModel
-from arc_eval_service.judging.providers.anthropic import AnthropicModel
+from arc_eval_service.domain.errors import ModelError, UnknownModelError
+from arc_eval_service.judging.ports import JudgeModel
 from arc_eval_service.judging.providers.openai_compat import OpenAICompatibleModel
 
-Provider = Literal["anthropic", "openai_compatible"]
+Provider = Literal["openai_compatible"]
 
 
 class ModelProfile(BaseModel):
@@ -77,14 +76,6 @@ class ModelRegistry:
                 )
 
         model_id = model_override or profile.model
-        if profile.provider == "anthropic":
-            if not api_key:
-                raise ModelError(f"profile '{profile.name}' requires an Anthropic key")
-            return AnthropicModel(
-                model=model_id,
-                api_key=api_key,
-                base_url=profile.base_url or "https://api.anthropic.com",
-            )
         return OpenAICompatibleModel(
             model=model_id,
             base_url=profile.base_url or "https://api.openai.com/v1",

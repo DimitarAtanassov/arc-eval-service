@@ -3,7 +3,7 @@
 This is the boundary ``arc-model-lab`` calls after inference: it sends a completed
 interaction (:class:`EvaluateRequest`) and receives one score per metric
 (:class:`EvaluateResponse`). These DTOs are the public shape of the service; the
-internal judging types live in :mod:`arc_eval_service.evaluation.schemas`.
+internal judging types live in :mod:`arc_eval_service.domain.evaluation`.
 """
 
 from __future__ import annotations

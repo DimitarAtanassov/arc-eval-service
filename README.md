@@ -53,12 +53,13 @@ is rejected with `422`. The only other route is `GET /health`, a liveness check.
 
 - `task_type` selects the metrics. `summarization` runs `faithfulness` and
   `answer_relevance`. An unknown task type falls back to a default set. The
-  mapping lives in [service.py](src/arc_eval_service/evaluation/service.py).
+  mapping lives in [policy.py](src/arc_eval_service/services/policy.py).
 - Metric and judge prompts live in per-file YAML under
-  [prompts/metrics/](src/arc_eval_service/prompts/metrics) and
-  [prompts/judges/](src/arc_eval_service/prompts/judges), loaded and validated at
+  [catalog/metric/](src/arc_eval_service/catalog/metric) and
+  [catalog/judge/](src/arc_eval_service/catalog/judge), loaded and validated at
   startup. A metric is a rubric; a judge is an optional system prompt plus a
-  model. The engine composes `[judge.system_prompt?] + metric.rubric + verdict`.
+  model. The engine composes `[judge.system_prompt?] + metric.rubric` and requests
+  a structured verdict from the model.
 - Scoring is best effort per metric. A metric that fails (for example, no judge
   model is configured) is persisted with its error but omitted from the response,
   so a caller never stores an infrastructure failure as a real score of zero.
@@ -118,24 +119,30 @@ the query paths (by metric, by model, over time) indexable in plain SQL. The
 
 ```text
 src/arc_eval_service/
-  app.py            # builds the FastAPI app and the health route
-  core/
-    config.py       # settings, read from ARC_EVAL_* environment variables
-    deps.py         # dependency injection (composition root)
+  app.py            # builds the FastAPI app, mounts the routers
+  api/              # HTTP boundary (the only FastAPI-aware layer)
+    routes/         # evaluate.py, health.py
+    schemas.py      # request and response wire DTOs (the arc-model-lab contract)
+    dependencies.py # dependency injection (composition root)
+  domain/           # framework-free core
+    evaluation.py   # EvaluationCase, MetricScore
     errors.py       # domain errors, captured per-metric by the judge engine
-    logging.py      # JSON structured logging
-  evaluation/       # the POST /v1/evaluate vertical
-    contract.py     # request and response wire DTOs
-    router.py       # the route
-    service.py      # score -> persist -> respond; task -> metrics mapping
-    records.py      # persistence domain models
-    schemas.py     # internal judging types shared with prompts/ and judging/
-  judging/          # judge engine, the JudgeModel port, provider adapters
-  prompts/          # loader, schema, render + metrics/*.yaml and judges/*.yaml
+  services/         # application layer
+    evaluation_service.py  # score -> persist -> respond
+    policy.py       # task_type -> metrics mapping
+    mapping.py      # pure wire <-> domain <-> record mappers
+  judging/          # judge engine, the JudgeModel port, registry, provider adapters
+  catalog/          # the evaluator catalog
+    metric/         # MetricDefinition, render, + one YAML per metric
+    judge/          # JudgeDefinition + one YAML per judge
   db/
     engine.py       # async engine and session factory (Postgres only)
     models.py       # eval_requests, evaluation_results
+    records.py      # persistence DTOs (repository write-model)
     repositories/   # one per table, with pure record <-> row mappers
+  core/
+    config.py       # settings, read from ARC_EVAL_* environment variables
+    logging.py      # JSON structured logging
 migrations/         # Alembic migrations
 ```
 
@@ -149,7 +156,7 @@ All settings are read from `ARC_EVAL_*` environment variables.
 | `ARC_EVAL_MODEL_PROFILES` | no | JSON list of judge-model profiles. The API key is referenced by env-var name (`api_key_env`), never inlined. |
 | `ARC_EVAL_DEFAULT_MODEL` | no | Model profile used when a judge does not name one. |
 | `ARC_EVAL_DEFAULT_JUDGE` | no | Judge used when a request does not name one. Defaults to `default`. |
-| `ARC_EVAL_PROMPTS_PATH` | no | Path to a prompts directory (with `metrics/` and `judges/`) overriding the bundled library. |
+| `ARC_EVAL_PROMPTS_PATH` | no | Path to a catalog directory (with `metric/` and `judge/`) overriding the bundled catalog. |
 | `ARC_EVAL_APP_NAME` | no | Title shown in the API docs. Defaults to `arc-eval-service`. |
 | `ARC_EVAL_SERVICE_NAME` | no | Service name in the health response. Defaults to `arc-eval-service`. |
 | `ARC_EVAL_LOG_LEVEL` | no | Log level for the JSON logger. Defaults to `INFO`. |

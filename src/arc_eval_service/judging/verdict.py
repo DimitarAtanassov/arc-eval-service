@@ -1,61 +1,58 @@
-"""The judge's output contract: strict-JSON verdict parsing (pure).
+"""The judge's structured output: a Pydantic verdict (schema and parser).
 
-Every metric is scored by asking the model to return JSON
-``{"score": 0..1, "label": "...", "explanation": "..."}``. :func:`parse_verdict`
-tolerates fenced/loose JSON so a chatty model still parses. This is the judging
-mechanism's contract; it is independent of any specific metric's rubric.
+Every metric is scored by asking the judge model for a structured object
+``{"score", "label", "explanation"}`` via the provider's structured-output
+(JSON-schema) mode, so no free-text output instruction is needed. :class:`Verdict`
+*is* the schema handed to the model and the shape parsed back; its field
+descriptions carry the guidance the model needs (for example that ``1`` is best).
+:func:`parse_verdict` still extracts the first JSON object so a chatty or
+non-structured endpoint parses.
 """
 
 from __future__ import annotations
 
-import json
 import re
-from dataclasses import dataclass
 
-from arc_eval_service.core.errors import EvaluationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from arc_eval_service.domain.errors import EvaluationError
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
-VERDICT_INSTRUCTION = (
-    "Respond with ONLY a JSON object of the form "
-    '{"score": <number between 0 and 1>, "label": "<short verdict>", '
-    '"explanation": "<one concise sentence>"}. '
-    "1 is best, 0 is worst. Do not add any text outside the JSON."
-)
 
+class Verdict(BaseModel):
+    """A judge outcome; doubles as the structured-output schema for the model."""
 
-@dataclass(frozen=True, slots=True)
-class Verdict:
-    """A parsed judge outcome (score normalised to ``[0, 1]``)."""
+    model_config = ConfigDict(frozen=True)
 
-    score: float
-    label: str | None = None
-    explanation: str | None = None
+    score: float = Field(description="Quality in [0, 1]; 1 is best, 0 is worst.")
+    label: str | None = Field(default=None, description="A short verdict.")
+    explanation: str | None = Field(
+        default=None, description="One concise sentence explaining the score."
+    )
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def _clamp_unit_interval(cls, value: object) -> float:
+        """Require a numeric score and clamp it into ``[0, 1]``."""
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError("score must be numeric")
+        return max(0.0, min(1.0, float(value)))
 
 
 def parse_verdict(text: str) -> Verdict:
     """Parse a model's text into a :class:`Verdict`.
 
+    Prefers a structured response, but extracts the first JSON object so a chatty
+    or fenced reply still parses.
+
     Raises:
-        EvaluationError: no JSON object, or no usable ``score``.
+        EvaluationError: no JSON object, or no usable numeric ``score``.
     """
     match = _JSON_OBJECT.search(text or "")
     if match is None:
         raise EvaluationError("judge model returned no JSON verdict")
     try:
-        payload = json.loads(match.group(0))
-    except json.JSONDecodeError as exc:
-        raise EvaluationError(f"judge verdict is not valid JSON: {exc}") from exc
-
-    raw = payload.get("score")
-    if not isinstance(raw, int | float) or isinstance(raw, bool):
-        raise EvaluationError("judge verdict missing a numeric 'score'")
-    score = max(0.0, min(1.0, float(raw)))
-
-    label = payload.get("label")
-    explanation = payload.get("explanation")
-    return Verdict(
-        score=score,
-        label=str(label) if label is not None else None,
-        explanation=str(explanation) if explanation is not None else None,
-    )
+        return Verdict.model_validate_json(match.group(0))
+    except ValidationError as exc:
+        raise EvaluationError(f"invalid judge verdict: {exc}") from exc

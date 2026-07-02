@@ -10,16 +10,16 @@ from collections.abc import Sequence
 
 import pytest
 
+from arc_eval_service.api.schemas import EvaluateRequest, EvaluateResponse
+from arc_eval_service.catalog import load_catalog
+from arc_eval_service.db.records import NewEvalRequest, NewEvaluationResult
 from arc_eval_service.db.repositories import (
     EvalRequestRepository,
     EvaluationResultRepository,
 )
-from arc_eval_service.evaluation.contract import EvaluateRequest, EvaluateResponse
-from arc_eval_service.evaluation.records import NewEvalRequest, NewEvaluationResult
-from arc_eval_service.evaluation.schemas import EvaluationCase, EvaluationResult
-from arc_eval_service.evaluation.service import EvaluationService
+from arc_eval_service.domain.evaluation import EvaluationCase, MetricScore
 from arc_eval_service.judging.engine import JudgeEngine
-from arc_eval_service.prompts.loader import load_library
+from arc_eval_service.services.evaluation_service import EvaluationService
 
 pytestmark = pytest.mark.contract
 
@@ -46,8 +46,8 @@ class _FakeEngine(JudgeEngine):
         *,
         case_id: str,
         judge: str | None = None,
-    ) -> EvaluationResult:
-        return EvaluationResult(
+    ) -> MetricScore:
+        return MetricScore(
             metric=metric,
             model="stub",
             score=0.91,
@@ -77,7 +77,7 @@ class _NoopResultRepo(EvaluationResultRepository):
 def _service() -> EvaluationService:
     return EvaluationService(
         engine=_FakeEngine(),
-        library=load_library(),
+        library=load_catalog(),
         requests=_NoopRequestRepo(),
         results=_NoopResultRepo(),
     )

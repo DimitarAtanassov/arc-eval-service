@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from pydantic import BaseModel
+
 
 @dataclass(frozen=True, slots=True)
 class ModelSettings:
@@ -38,7 +40,16 @@ class JudgeModel(Protocol):
     provider: str
 
     async def complete(
-        self, *, system: str | None, prompt: str, settings: ModelSettings
+        self,
+        *,
+        system: str | None,
+        prompt: str,
+        settings: ModelSettings,
+        response_schema: type[BaseModel] | None = None,
     ) -> ModelCompletion:
-        """Run a single-turn completion and return the model's text."""
+        """Run a single-turn completion and return the model's text.
+
+        ``response_schema`` optionally requests structured output matching a
+        Pydantic model; the adapter maps it to the vendor's JSON-schema mode.
+        """
         ...

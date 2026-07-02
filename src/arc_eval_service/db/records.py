@@ -1,10 +1,10 @@
 """Persistence domain models: what the service hands to the repositories.
 
-These sit between the wire contract (:mod:`contract`) and the ORM rows
-(:mod:`arc_eval_service.db.models`). The service builds them; the repositories map
-them to rows. Keeping them separate from the wire DTOs means the storage shape can
-evolve without changing the public API (and vice versa). ``id`` and timestamps are
-assigned by the service and database, not the caller.
+These sit between the wire contract (:mod:`arc_eval_service.api.schemas`) and the
+ORM rows (:mod:`arc_eval_service.db.models`). The service builds them; the
+repositories map them to rows. Keeping them separate from the wire DTOs means the
+storage shape can evolve without changing the public API (and vice versa). ``id``
+and timestamps are assigned by the service and database, not the caller.
 """
 
 from __future__ import annotations

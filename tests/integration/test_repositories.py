@@ -8,11 +8,11 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from arc_eval_service.db.engine import Database
+from arc_eval_service.db.records import NewEvalRequest, NewEvaluationResult
 from arc_eval_service.db.repositories import (
     EvalRequestRepository,
     EvaluationResultRepository,
 )
-from arc_eval_service.evaluation.records import NewEvalRequest, NewEvaluationResult
 
 pytestmark = pytest.mark.integration
 

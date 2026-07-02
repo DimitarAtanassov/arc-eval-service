@@ -1,10 +1,10 @@
-"""Evaluation domain types shared by the prompt library and the judging engine.
+"""Domain evaluation types shared by the judging engine, prompts, and services.
 
 The interaction under test (:class:`EvaluationCase`) and the per-metric outcome
-(:class:`EvaluationResult`). There is no aggregate: each metric produces one
-independent result, and any roll-up is the caller's concern.
-
-These types are not tied to any HTTP endpoint.
+(:class:`MetricScore`). There is no aggregate: each metric produces one
+independent score, and any roll-up is the caller's concern. These types are pure
+data with no framework dependencies, which is what lets the lower layers depend on
+them without a cycle.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class EvaluationCase(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
-class EvaluationResult(BaseModel):
+class MetricScore(BaseModel):
     """Outcome of scoring one metric against one case.
 
     ``passed`` is the metric's own threshold applied to ``score`` (not an

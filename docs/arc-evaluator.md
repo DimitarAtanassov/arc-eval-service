@@ -19,10 +19,9 @@ design.
 flowchart LR
     API["POST /v1/evaluate"] --> SVC["EvaluationService"]
     SVC -->|task_type -> metrics| ENG["JudgeEngine"]
-    ENG --> LIB["PromptLibrary (metrics + judges, YAML)"]
+    ENG --> LIB["Catalog (metric + judge, YAML)"]
     ENG --> PORT["JudgeModel (port)"]
     PORT --> OAI["OpenAI-compatible adapter"]
-    PORT --> ANT["Anthropic adapter"]
     SVC --> REQ["EvalRequestRepository"]
     SVC --> RES["EvaluationResultRepository"]
     REQ --> DB[("Postgres")]
@@ -31,7 +30,7 @@ flowchart LR
 
 1. `EvaluationService` picks the metrics for the request's `task_type`.
 2. It scores them concurrently through `JudgeEngine`, one metric at a time,
-   each rendered to a strict-JSON verdict prompt and run on the resolved model.
+   each run on the resolved model requesting a structured `Verdict` response.
 3. It persists the request and every result, then returns the metrics that scored.
 
 A **metric** is a criterion (a rubric, the case fields it needs, a case-layout
@@ -43,7 +42,7 @@ are its only logic. Add or edit a metric or judge by editing YAML, not code.
 ## task_type to metrics
 
 The mapping is a small in-code table in
-[service.py](../src/arc_eval_service/evaluation/service.py), because it is scoring
+[policy.py](../src/arc_eval_service/services/policy.py), because it is scoring
 policy, not configuration.
 
 | task_type | metrics |
@@ -51,25 +50,25 @@ policy, not configuration.
 | `summarization` | `faithfulness`, `answer_relevance` |
 | (any other) | `answer_relevance`, `safety` |
 
-## Prompts and judges
+## Metrics and judges
 
-Metric and judge prompts live in per-file YAML under
-[prompts/metrics/](../src/arc_eval_service/prompts/metrics) and
-[prompts/judges/](../src/arc_eval_service/prompts/judges), one file per metric or
+Metric and judge definitions live in per-file YAML under
+[catalog/metric/](../src/arc_eval_service/catalog/metric) and
+[catalog/judge/](../src/arc_eval_service/catalog/judge), one file per metric or
 judge, loaded and validated once at startup (a malformed file fails boot, not a
 request). The engine
 composes the system prompt as an ordered pipeline of optional layers:
 
 ```text
-system = [judge.system_prompt?] + metric.rubric + verdict instruction
+system = [judge.system_prompt?] + metric.rubric
 user   = render(metric.template, case)
 ```
 
 A judge with no system prompt of its own runs the metric rubric only; a judge with
-one has it prepended. The verdict instruction (the JSON output contract) is always
-last and lives in code next to the parser, so it cannot drift from
-[parse_verdict](../src/arc_eval_service/judging/verdict.py). Adding a metric or a
-judge, or tuning a rubric, is a YAML edit; the code does not change.
+one has it prepended. The output contract is not a prompt: the engine requests a
+structured [Verdict](../src/arc_eval_service/judging/verdict.py) through the model's
+JSON-schema mode, so the JSON shape cannot drift from the parser. Adding a metric
+or a judge, or tuning a rubric, is a YAML edit; the code does not change.
 
 ## Judge models
 

@@ -3,15 +3,17 @@
 One adapter covers OpenAI, Azure OpenAI and **self-hosted** servers that speak
 the OpenAI chat-completions API (vLLM, Ollama, LM Studio, TGI, ...). The only
 difference is ``base_url`` (and the key), so personal/company models plug in
-without new code.
+without new code. When a ``response_schema`` is supplied it is sent as a
+``json_schema`` response format so the model returns a structured verdict.
 """
 
 from __future__ import annotations
 
 import httpx
+from pydantic import BaseModel
 
-from arc_eval_service.core.errors import ModelError
-from arc_eval_service.judging.model import JudgeModel, ModelCompletion, ModelSettings
+from arc_eval_service.domain.errors import ModelError
+from arc_eval_service.judging.ports import JudgeModel, ModelCompletion, ModelSettings
 
 
 class OpenAICompatibleModel(JudgeModel):
@@ -33,19 +35,32 @@ class OpenAICompatibleModel(JudgeModel):
         self._timeout_s = timeout_s
 
     async def complete(
-        self, *, system: str | None, prompt: str, settings: ModelSettings
+        self,
+        *,
+        system: str | None,
+        prompt: str,
+        settings: ModelSettings,
+        response_schema: type[BaseModel] | None = None,
     ) -> ModelCompletion:
         messages: list[dict[str, str]] = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        payload = {
+        payload: dict[str, object] = {
             "model": self.name,
             "messages": messages,
             "temperature": settings.temperature,
             "max_tokens": settings.max_tokens,
         }
+        if response_schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_schema.__name__.lower(),
+                    "schema": response_schema.model_json_schema(),
+                },
+            }
         headers = {"content-type": "application/json"}
         if self._api_key:
             headers["authorization"] = f"Bearer {self._api_key}"

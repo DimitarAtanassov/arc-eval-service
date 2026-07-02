@@ -10,9 +10,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from arc_eval_service.core.deps import get_evaluation_service
-from arc_eval_service.evaluation.contract import EvaluateRequest, EvaluateResponse
-from arc_eval_service.evaluation.service import EvaluationService
+from arc_eval_service.api.dependencies import get_evaluation_service
+from arc_eval_service.api.schemas import EvaluateRequest, EvaluateResponse
+from arc_eval_service.services.evaluation_service import EvaluationService
 
 router = APIRouter(tags=["evaluation"])
 

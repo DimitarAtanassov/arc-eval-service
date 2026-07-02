@@ -10,8 +10,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from arc_eval_service.db.models import EvaluationResultRow
+from arc_eval_service.db.records import NewEvaluationResult
 from arc_eval_service.db.repositories.base import BaseRepository
-from arc_eval_service.evaluation.records import NewEvaluationResult
 
 
 def new_result_to_row(item: NewEvaluationResult) -> EvaluationResultRow:

@@ -8,8 +8,8 @@ unit-tests without a live database.
 from __future__ import annotations
 
 from arc_eval_service.db.models import EvalRequestRow
+from arc_eval_service.db.records import NewEvalRequest
 from arc_eval_service.db.repositories.base import BaseRepository
-from arc_eval_service.evaluation.records import NewEvalRequest
 
 
 def new_request_to_row(item: NewEvalRequest) -> EvalRequestRow:

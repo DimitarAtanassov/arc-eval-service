@@ -2,8 +2,8 @@
 
 Given a metric name and a case it resolves the metric criterion and the judge from
 the prompt library, composes the system prompt (optional judge persona, then the
-metric rubric, then the verdict instruction), renders the case into the user
-prompt, runs the judge model, parses the verdict, and applies the metric's
+metric rubric), renders the case into the user prompt, runs the judge model asking
+for a structured :class:`Verdict`, parses that verdict, and applies the metric's
 threshold. A validation, model or parse failure degrades that metric into an
 errored result and is never raised, so one bad metric cannot fail the whole
 request.
@@ -14,23 +14,20 @@ from __future__ import annotations
 import logging
 from time import perf_counter
 
-from arc_eval_service.core.errors import (
+from arc_eval_service.catalog import Catalog
+from arc_eval_service.catalog.judge import JudgeDefinition
+from arc_eval_service.catalog.metric import MetricDefinition, render_case
+from arc_eval_service.domain.errors import (
     EvaluationError,
     ModelError,
     UnknownJudgeError,
     UnknownMetricError,
     UnknownModelError,
 )
-from arc_eval_service.evaluation.schemas import EvaluationCase, EvaluationResult
-from arc_eval_service.judging.model import JudgeModel, ModelCompletion, ModelSettings
+from arc_eval_service.domain.evaluation import EvaluationCase, MetricScore
+from arc_eval_service.judging.ports import JudgeModel, ModelCompletion, ModelSettings
 from arc_eval_service.judging.profiles import ModelRegistry
-from arc_eval_service.judging.verdict import VERDICT_INSTRUCTION, parse_verdict
-from arc_eval_service.prompts.render import render_case
-from arc_eval_service.prompts.schema import (
-    JudgeDefinition,
-    MetricDefinition,
-    PromptLibrary,
-)
+from arc_eval_service.judging.verdict import Verdict, parse_verdict
 
 logger = logging.getLogger("arc_eval_service.judging.engine")
 
@@ -39,7 +36,7 @@ class JudgeEngine:
     """Scores one metric against one case with a resolved judge (best-effort)."""
 
     def __init__(
-        self, *, library: PromptLibrary, models: ModelRegistry, default_judge: str
+        self, *, library: Catalog, models: ModelRegistry, default_judge: str
     ) -> None:
         self._library = library
         self._models = models
@@ -52,7 +49,7 @@ class JudgeEngine:
         *,
         case_id: str,
         judge: str | None = None,
-    ) -> EvaluationResult:
+    ) -> MetricScore:
         """Score one metric: compose -> render -> model -> parse, capturing errors."""
         start = perf_counter()
         judge_name = judge or self._default_judge
@@ -80,7 +77,7 @@ class JudgeEngine:
             return _errored(metric, start, exc, level=logging.ERROR)
 
         latency_ms = round((perf_counter() - start) * 1000, 4)
-        return EvaluationResult(
+        return MetricScore(
             metric=metric,
             model=completion.model,
             provider=model.provider,
@@ -100,21 +97,22 @@ class JudgeEngine:
     async def _complete(
         self, model: JudgeModel, system: str, user: str, settings: ModelSettings
     ) -> ModelCompletion:
-        """Call the judge model for a single-turn completion."""
-        return await model.complete(system=system, prompt=user, settings=settings)
+        """Call the judge model for a single-turn, structured completion."""
+        return await model.complete(
+            system=system, prompt=user, settings=settings, response_schema=Verdict
+        )
 
 
 def _compose_system(judge: JudgeDefinition, rubric: str) -> str:
-    """Compose the system prompt: optional judge persona, metric rubric, verdict contract.
+    """Compose the system prompt: optional judge persona, then the metric rubric.
 
-    The verdict instruction (the JSON output contract) is always last and comes
-    from code, not the library, so it cannot drift from :func:`parse_verdict`.
+    The output shape is not described here: the engine requests a structured
+    :class:`Verdict` from the model, so the JSON contract lives in that schema.
     """
     layers: list[str] = []
     if judge.system_prompt:
         layers.append(judge.system_prompt.strip())
     layers.append(rubric.strip())
-    layers.append(VERDICT_INSTRUCTION)
     return "\n\n".join(layers)
 
 
@@ -125,12 +123,10 @@ def _check_requires(name: str, metric: MetricDefinition, case: EvaluationCase) -
             raise EvaluationError(f"metric '{name}' requires '{field}'")
 
 
-def _errored(
-    metric: str, start: float, exc: Exception, *, level: int
-) -> EvaluationResult:
+def _errored(metric: str, start: float, exc: Exception, *, level: int) -> MetricScore:
     latency_ms = round((perf_counter() - start) * 1000, 4)
     logger.log(level, "metric failed", extra={"metric": metric, "error": str(exc)})
-    return EvaluationResult(
+    return MetricScore(
         metric=metric,
         score=0.0,
         passed=False,

@@ -9,25 +9,24 @@ than raising.
 from __future__ import annotations
 
 import pytest
+from pydantic import BaseModel
 
-from arc_eval_service.core.errors import ModelError, UnknownModelError
-from arc_eval_service.evaluation.schemas import EvaluationCase
+from arc_eval_service.catalog import Catalog
+from arc_eval_service.catalog.judge import JudgeDefinition
+from arc_eval_service.catalog.metric import MetricDefinition
+from arc_eval_service.domain.errors import ModelError, UnknownModelError
+from arc_eval_service.domain.evaluation import EvaluationCase
 from arc_eval_service.judging.engine import JudgeEngine
-from arc_eval_service.judging.model import JudgeModel, ModelCompletion, ModelSettings
+from arc_eval_service.judging.ports import JudgeModel, ModelCompletion, ModelSettings
 from arc_eval_service.judging.profiles import ModelProfile, ModelRegistry
-from arc_eval_service.prompts.schema import (
-    JudgeDefinition,
-    MetricDefinition,
-    PromptLibrary,
-)
 
 pytestmark = pytest.mark.unit
 
 GOOD = '{"score": 0.9, "label": "pass", "explanation": "ok"}'
 
 
-def _library() -> PromptLibrary:
-    return PromptLibrary(
+def _library() -> Catalog:
+    return Catalog(
         metrics={
             "safety": MetricDefinition(
                 rubric="Rate safety.",
@@ -65,7 +64,12 @@ class _StubModel(JudgeModel):
         self._capture = capture
 
     async def complete(
-        self, *, system: str | None, prompt: str, settings: ModelSettings
+        self,
+        *,
+        system: str | None,
+        prompt: str,
+        settings: ModelSettings,
+        response_schema: type[BaseModel] | None = None,
     ) -> ModelCompletion:
         if self._capture is not None and system is not None:
             self._capture.append(system)
@@ -121,7 +125,7 @@ async def test_default_judge_has_no_own_system_prompt() -> None:
         "safety", EvaluationCase(request_id="r", output="hi"), case_id="c1"
     )
     system = capture[0]
-    # The rubric comes first (no judge persona), the verdict instruction last.
+    # The rubric is the whole system prompt (no judge persona, no verdict text).
     assert system.startswith("Rate safety.")
     assert "You are meticulous." not in system
 

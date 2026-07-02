@@ -8,7 +8,7 @@ numbered.
 
 from __future__ import annotations
 
-from arc_eval_service.evaluation.schemas import EvaluationCase
+from arc_eval_service.domain.evaluation import EvaluationCase
 
 _SLOTS = ("input", "output", "context", "reference")
 
