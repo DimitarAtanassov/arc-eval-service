@@ -94,6 +94,17 @@ def test_request_body_matches_the_contract() -> None:
     assert request.metadata.model_id == "mdl-1"
 
 
+def test_request_accepts_optional_metrics() -> None:
+    # Omitted: the caller relies on task-type policy (the default contract).
+    assert EvaluateRequest.model_validate(REQUEST_BODY).metrics is None
+
+    # Present: the caller selects the metrics to score explicitly.
+    selective = EvaluateRequest.model_validate(
+        {**REQUEST_BODY, "metrics": ["faithfulness"]}
+    )
+    assert selective.metrics == ["faithfulness"]
+
+
 async def test_response_body_matches_the_contract() -> None:
     response = await _service().evaluate(EvaluateRequest.model_validate(REQUEST_BODY))
     payload = response.model_dump()

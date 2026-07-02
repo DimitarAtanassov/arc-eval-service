@@ -57,6 +57,28 @@ async def test_openai_compatible_requests_structured_output() -> None:
 
 
 @respx.mock
+async def test_openai_compatible_prepends_system_message() -> None:
+    route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "model": "gpt-4o",
+                "choices": [{"message": {"content": '{"score": 1}'}}],
+            },
+        )
+    )
+    model = OpenAICompatibleModel(model="gpt-4o", api_key="sk")
+    await model.complete(
+        system="You are a judge.", prompt="hi", settings=ModelSettings()
+    )
+    messages = json.loads(route.calls.last.request.content)["messages"]
+    assert messages == [
+        {"role": "system", "content": "You are a judge."},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+@respx.mock
 async def test_adapter_wraps_http_error_as_model_error() -> None:
     respx.post("https://api.openai.com/v1/chat/completions").mock(
         return_value=httpx.Response(500)

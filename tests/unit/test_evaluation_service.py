@@ -18,6 +18,7 @@ from arc_eval_service.db.repositories import (
     EvalRequestRepository,
     EvaluationResultRepository,
 )
+from arc_eval_service.domain.errors import UnknownMetricError
 from arc_eval_service.domain.evaluation import EvaluationCase, MetricScore
 from arc_eval_service.judging.engine import JudgeEngine
 from arc_eval_service.services.evaluation_service import EvaluationService
@@ -106,19 +107,25 @@ def _service(
     )
 
 
-def _request(task_type: str = "summarization") -> EvaluateRequest:
+def _request(
+    task_type: str = "summarization", *, metrics: list[str] | None = None
+) -> EvaluateRequest:
     return EvaluateRequest(
         task_type=task_type,
         input_text="the source article",
         output_text="the summary",
         prompt="Summarize:",
+        metrics=metrics,
         metadata=EvaluationMetadata(inference_id="inf-1", model_id="mdl-1"),
     )
 
 
 async def test_scored_metrics_are_returned_and_mapped() -> None:
     engine = _FakeEngine(
-        {"faithfulness": _ok("faithfulness"), "answer_relevance": _ok("answer_relevance")}
+        {
+            "faithfulness": _ok("faithfulness"),
+            "answer_relevance": _ok("answer_relevance"),
+        }
     )
     requests, results = _SpyRequestRepo(), _SpyResultRepo()
     service = _service(engine, requests=requests, results=results)
@@ -134,7 +141,10 @@ async def test_scored_metrics_are_returned_and_mapped() -> None:
     # One request row plus one result row per metric were persisted with the ids.
     assert len(requests.created) == 1
     assert requests.created[0].inference_id == "inf-1"
-    assert {r.metric_name for r in results.created} == {"faithfulness", "answer_relevance"}
+    assert {r.metric_name for r in results.created} == {
+        "faithfulness",
+        "answer_relevance",
+    }
     # Judge and prompt provenance are captured on each persisted result.
     faith_row = next(r for r in results.created if r.metric_name == "faithfulness")
     assert faith_row.judge == {
@@ -146,6 +156,7 @@ async def test_scored_metrics_are_returned_and_mapped() -> None:
         "max_tokens": 1024,
         "system_prompt": "rubric for faithfulness\n\nRespond with JSON only.",
     }
+    assert faith_row.prompt is not None
     assert faith_row.prompt["template"] == "rubric for faithfulness"
     assert faith_row.prompt["variables"]["input"] == "the source article"
     assert faith_row.prompt["variables"]["output"] == "the summary"
@@ -160,6 +171,45 @@ async def test_unknown_task_type_uses_default_metrics() -> None:
     response = await service.evaluate(_request(task_type="question_answering"))
 
     assert {r.metric_name for r in response.results} == {"answer_relevance", "safety"}
+
+
+async def test_explicit_metrics_override_task_policy() -> None:
+    engine = _FakeEngine({"faithfulness": _ok("faithfulness")})
+    requests, results = _SpyRequestRepo(), _SpyResultRepo()
+    service = _service(engine, requests=requests, results=results)
+
+    response = await service.evaluate(_request(metrics=["faithfulness"]))
+
+    # Only the requested metric is scored, not the summarization policy set.
+    assert {r.metric_name for r in response.results} == {"faithfulness"}
+    assert {r.metric_name for r in results.created} == {"faithfulness"}
+
+
+async def test_explicit_metrics_are_deduplicated() -> None:
+    engine = _FakeEngine({"faithfulness": _ok("faithfulness")})
+    results = _SpyResultRepo()
+    service = _service(engine, results=results)
+
+    response = await service.evaluate(
+        _request(metrics=["faithfulness", "faithfulness"])
+    )
+
+    assert {r.metric_name for r in response.results} == {"faithfulness"}
+    assert len(results.created) == 1
+
+
+async def test_unknown_metric_raises_and_persists_nothing() -> None:
+    requests, results = _SpyRequestRepo(), _SpyResultRepo()
+    service = _service(_FakeEngine({}), requests=requests, results=results)
+
+    with pytest.raises(UnknownMetricError) as exc_info:
+        await service.evaluate(_request(metrics=["faithfulness", "does-not-exist"]))
+
+    # The known metric is accepted; only the undefined one is reported, and the
+    # request is rejected before anything is scored or persisted.
+    assert exc_info.value.names == ("does-not-exist",)
+    assert requests.created == []
+    assert results.created == []
 
 
 async def test_errored_metrics_are_excluded_from_response_but_persisted() -> None:
@@ -179,16 +229,24 @@ async def test_errored_metrics_are_excluded_from_response_but_persisted() -> Non
     assert all(r.error == "no judge model" for r in results.created)
     # An errored metric has no judge provenance and a null prompt template.
     assert all(r.judge is None for r in results.created)
-    assert all(r.prompt["template"] is None for r in results.created)
+    assert all(
+        r.prompt is not None and r.prompt["template"] is None for r in results.created
+    )
 
 
 async def test_persistence_failure_does_not_fail_the_request() -> None:
     engine = _FakeEngine(
-        {"faithfulness": _ok("faithfulness"), "answer_relevance": _ok("answer_relevance")}
+        {
+            "faithfulness": _ok("faithfulness"),
+            "answer_relevance": _ok("answer_relevance"),
+        }
     )
     service = _service(engine, requests=_FailingRequestRepo())
 
     response = await service.evaluate(_request())
 
     # Scores are still returned even though the observability write failed.
-    assert {r.metric_name for r in response.results} == {"faithfulness", "answer_relevance"}
+    assert {r.metric_name for r in response.results} == {
+        "faithfulness",
+        "answer_relevance",
+    }

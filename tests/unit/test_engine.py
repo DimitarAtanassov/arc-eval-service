@@ -56,11 +56,17 @@ class _StubModel(JudgeModel):
     provider = "stub"
 
     def __init__(
-        self, text: str, *, fail: bool = False, capture: list[str] | None = None
+        self,
+        text: str,
+        *,
+        fail: bool = False,
+        boom: bool = False,
+        capture: list[str] | None = None,
     ) -> None:
         self.name = "stub-model"
         self._text = text
         self._fail = fail
+        self._boom = boom
         self._capture = capture
 
     async def complete(
@@ -73,6 +79,8 @@ class _StubModel(JudgeModel):
     ) -> ModelCompletion:
         if self._capture is not None and system is not None:
             self._capture.append(system)
+        if self._boom:
+            raise RuntimeError("unexpected stub crash")
         if self._fail:
             raise ModelError("stub failure")
         return ModelCompletion(text=self._text, model=self.name)
@@ -80,7 +88,12 @@ class _StubModel(JudgeModel):
 
 class _StubRegistry(ModelRegistry):
     def __init__(
-        self, *, text: str = GOOD, fail: bool = False, capture: list[str] | None = None
+        self,
+        *,
+        text: str = GOOD,
+        fail: bool = False,
+        boom: bool = False,
+        capture: list[str] | None = None,
     ) -> None:
         super().__init__(
             [ModelProfile(name="default", provider="openai_compatible", model="stub")],
@@ -88,6 +101,7 @@ class _StubRegistry(ModelRegistry):
         )
         self._text = text
         self._fail = fail
+        self._boom = boom
         self._capture = capture
 
     def resolve(
@@ -95,15 +109,21 @@ class _StubRegistry(ModelRegistry):
     ) -> JudgeModel:
         if not self.has(name):
             raise UnknownModelError(name or "default")
-        return _StubModel(self._text, fail=self._fail, capture=self._capture)
+        return _StubModel(
+            self._text, fail=self._fail, boom=self._boom, capture=self._capture
+        )
 
 
 def _engine(
-    *, text: str = GOOD, fail: bool = False, capture: list[str] | None = None
+    *,
+    text: str = GOOD,
+    fail: bool = False,
+    boom: bool = False,
+    capture: list[str] | None = None,
 ) -> JudgeEngine:
     return JudgeEngine(
         library=_library(),
-        models=_StubRegistry(text=text, fail=fail, capture=capture),
+        models=_StubRegistry(text=text, fail=fail, boom=boom, capture=capture),
         default_judge="default",
     )
 
@@ -148,6 +168,15 @@ async def test_model_failure_is_contained() -> None:
         "safety", EvaluationCase(request_id="r", output="x"), case_id="c1"
     )
     assert result.error is not None and result.score == 0.0 and result.passed is False
+
+
+async def test_unexpected_exception_is_contained() -> None:
+    # A non-domain error (a buggy model) must not fail the request; it degrades.
+    result = await _engine(boom=True).score(
+        "safety", EvaluationCase(request_id="r", output="x"), case_id="c1"
+    )
+    assert result.error == "unexpected stub crash"
+    assert result.score == 0.0 and result.passed is False
 
 
 async def test_missing_required_field_degrades() -> None:

@@ -53,7 +53,9 @@ is rejected with `422`. The only other route is `GET /health`, a liveness check.
 
 - `task_type` selects the metrics. `summarization` runs `faithfulness` and
   `answer_relevance`. An unknown task type falls back to a default set. The
-  mapping lives in [policy.py](src/arc_eval_service/services/policy.py).
+  mapping lives in [policy.py](src/arc_eval_service/services/policy.py). A request
+  may instead name explicit `metrics` to score; an unknown metric name is rejected
+  with `404` before anything is scored or persisted.
 - Metric and judge prompts live in per-file YAML under
   [catalog/metric/](src/arc_eval_service/catalog/metric) and
   [catalog/judge/](src/arc_eval_service/catalog/judge), loaded and validated at
@@ -148,7 +150,17 @@ migrations/         # Alembic migrations
 
 ## Configuration
 
-All settings are read from `ARC_EVAL_*` environment variables.
+Configuration lives in one place: a `.env` file at the repo root. Copy the
+template and edit it.
+
+```bash
+cp .env.example .env
+```
+
+`.env` is loaded automatically by `docker compose up` and by the runtime Make
+targets (`make run`, `make migrate`, ...). It is git-ignored, so secrets stay
+local. Every service setting is an `ARC_EVAL_*` variable; a value set directly in
+the process environment takes precedence over the file.
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
@@ -160,33 +172,37 @@ All settings are read from `ARC_EVAL_*` environment variables.
 | `ARC_EVAL_APP_NAME` | no | Title shown in the API docs. Defaults to `arc-eval-service`. |
 | `ARC_EVAL_SERVICE_NAME` | no | Service name in the health response. Defaults to `arc-eval-service`. |
 | `ARC_EVAL_LOG_LEVEL` | no | Log level for the JSON logger. Defaults to `INFO`. |
+| `OPENAI_API_KEY` | no | Example provider key. Any name works as long as a profile's `api_key_env` points at it; the value is read from the environment at call time. |
 
 A judge-model profile names a provider, a model id, and the env var holding the
 key. One OpenAI-compatible adapter covers OpenAI, Azure OpenAI, and self-hosted
-servers (vLLM, Ollama, and similar) by changing `base_url`.
+servers (vLLM, Ollama, and similar) by changing `base_url`. The relevant lines in
+`.env`:
 
 ```bash
-export ARC_EVAL_MODEL_PROFILES='[{"name":"default","provider":"openai_compatible","model":"gpt-4o-mini","api_key_env":"OPENAI_API_KEY"}]'
-export ARC_EVAL_DEFAULT_MODEL=default
-export OPENAI_API_KEY=sk-...
+ARC_EVAL_MODEL_PROFILES='[{"name":"default","provider":"openai_compatible","model":"gpt-4o-mini","api_key_env":"OPENAI_API_KEY"}]'
+ARC_EVAL_DEFAULT_MODEL=default
+OPENAI_API_KEY=sk-...
 ```
 
 ## Running locally
 
-Bring up Postgres and the service with Docker Compose. The service runs
-`alembic upgrade head` before it serves, so the schema is always current.
+Copy the environment template once, then bring up Postgres and the service with
+Docker Compose. The service runs `alembic upgrade head` before it serves, so the
+schema is always current.
 
 ```bash
+cp .env.example .env     # first time only
 docker compose up
 ```
 
 To run from source with auto-reload, start just the database, then run the app
-against it.
+against it. `make run` loads `.env`, whose default `ARC_EVAL_DATABASE_URL` points
+at the compose Postgres on localhost.
 
 ```bash
 docker compose up db
-export ARC_EVAL_DATABASE_URL=postgresql+psycopg://arc:arc@localhost:5432/arc_eval
-make run                 # uvicorn on port 8000
+make run                 # loads .env, uvicorn on port 8001
 ```
 
 Score an interaction:

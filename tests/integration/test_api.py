@@ -39,6 +39,24 @@ async def test_missing_required_field_is_422(client: AsyncClient) -> None:
     assert response.status_code == 422
 
 
+async def test_explicit_metric_scores_only_that_metric(
+    stub_client: AsyncClient,
+) -> None:
+    body = {**_VALID_BODY, "metrics": ["faithfulness"]}
+    response = await stub_client.post("/v1/evaluate", json=body)
+
+    assert response.status_code == 200
+    assert {r["metric_name"] for r in response.json()["results"]} == {"faithfulness"}
+
+
+async def test_unknown_metric_returns_404(client: AsyncClient) -> None:
+    body = {**_VALID_BODY, "metrics": ["does-not-exist"]}
+    response = await client.post("/v1/evaluate", json=body)
+
+    assert response.status_code == 404
+    assert "does-not-exist" in response.json()["detail"]
+
+
 async def test_evaluate_persists_request_and_results(
     stub_client: AsyncClient, clean_db: str
 ) -> None:
@@ -56,7 +74,9 @@ async def test_evaluate_persists_request_and_results(
     finally:
         engine.dispose()
 
-    assert [(r.inference_id, r.task_type) for r in requests] == [("inf-1", "summarization")]
+    assert [(r.inference_id, r.task_type) for r in requests] == [
+        ("inf-1", "summarization")
+    ]
     assert {r.metric_name for r in results} == {"faithfulness", "answer_relevance"}
     assert all(r.error is None for r in results)
     assert all(r.inference_id == "inf-1" for r in results)

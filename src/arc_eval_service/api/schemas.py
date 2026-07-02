@@ -39,6 +39,13 @@ class EvaluateRequest(BaseModel):
     prompt: str | None = Field(
         default=None, description="The rendered prompt, stored for audit."
     )
+    metrics: list[str] | None = Field(
+        default=None,
+        description=(
+            "Explicit metrics to score. When omitted, the metrics are chosen by "
+            "task_type. An unknown metric name is rejected with 404."
+        ),
+    )
     metadata: EvaluationMetadata = Field(default_factory=EvaluationMetadata)
 
 

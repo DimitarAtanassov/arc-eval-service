@@ -24,7 +24,9 @@ from arc_eval_service.judging.profiles import ModelProfile, ModelRegistry
 _TABLES = ("evaluation_results", "eval_requests")
 
 # A judge verdict that parses to a passing score, used by ``stub_client``.
-_STUB_VERDICT = '{"score": 0.9, "label": "pass", "explanation": "grounded in the source"}'
+_STUB_VERDICT = (
+    '{"score": 0.9, "label": "pass", "explanation": "grounded in the source"}'
+)
 
 
 class _StubModel:

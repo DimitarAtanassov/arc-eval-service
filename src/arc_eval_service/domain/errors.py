@@ -7,13 +7,22 @@ as errored results, so a single metric failure never fails the whole request.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 
 class UnknownMetricError(ValueError):
-    """Raised when a request references a metric that is not defined."""
+    """Raised when a request references one or more metrics that are not defined."""
 
-    def __init__(self, name: str) -> None:
-        self.name = name
-        super().__init__(f"unknown metric '{name}'")
+    def __init__(self, name: str | Iterable[str]) -> None:
+        names = (name,) if isinstance(name, str) else tuple(name)
+        self.names = names
+        self.name = names[0] if names else ""
+        if len(names) == 1:
+            message = f"unknown metric '{self.name}'"
+        else:
+            joined = ", ".join(f"'{item}'" for item in names)
+            message = f"unknown metrics: {joined}"
+        super().__init__(message)
 
 
 class UnknownJudgeError(ValueError):
