@@ -18,7 +18,7 @@ design.
 ```mermaid
 flowchart LR
     API["POST /v1/evaluate"] --> SVC["EvaluationService"]
-    SVC -->|task_type -> metrics| ENG["JudgeEngine"]
+    SVC -->|"metrics or task_type"| ENG["JudgeEngine"]
     ENG --> LIB["Catalog (metric + judge, YAML)"]
     ENG --> PORT["JudgeModel (port)"]
     PORT --> OAI["OpenAI-compatible adapter"]
@@ -28,7 +28,9 @@ flowchart LR
     RES --> DB
 ```
 
-1. `EvaluationService` picks the metrics for the request's `task_type`.
+1. `EvaluationService` chooses the metrics: the ones the request names, or the
+   `task_type` defaults when it names none. An unknown metric name is rejected
+   with `404` before any scoring.
 2. It scores them concurrently through `JudgeEngine`, one metric at a time,
    each run on the resolved model requesting a structured `Verdict` response.
 3. It persists the request and every result, then returns the metrics that scored.
@@ -49,6 +51,9 @@ policy, not configuration.
 | --- | --- |
 | `summarization` | `faithfulness`, `answer_relevance` |
 | (any other) | `answer_relevance`, `safety` |
+
+A request that names `metrics` skips this table and scores exactly those. An
+unknown metric name is rejected with `404` before any scoring.
 
 ## Metrics and judges
 
@@ -89,6 +94,7 @@ changes.
 | No judge model configured | Every metric errors. The response is `{"results": []}`; the errored rows are still persisted. |
 | The observability write fails | Logged and swallowed. The caller still receives its scores. |
 | Required request field missing | `422`, before any scoring. |
+| A named metric is not in the catalog | `404`, before any scoring or persistence. |
 
 Scoring never fails the request: the judge engine degrades a failed metric to an
 errored result rather than raising. Persistence is the caller's bookkeeping, not

@@ -18,9 +18,10 @@ offline pipeline; observability is the two database tables, queried with SQL.
 POST /v1/evaluate
 ```
 
-Send one completed interaction. The service picks the metrics for the `task_type`,
-scores each one with a judge model, persists the request and every result, and
-returns the metrics that scored.
+Send one completed interaction. The service scores it against the metrics you
+name, or the default metrics for the `task_type` when you name none. It scores
+each metric with a judge model, saves the request and every result, and returns
+the metrics that scored.
 
 ```jsonc
 // request
@@ -229,7 +230,7 @@ make test-e2e            # score, persist, read the rows back
 
 | Target | What it does |
 | --- | --- |
-| `make run` | run the app locally with auto-reload on port 8000 |
+| `make run` | run the app locally with auto-reload on port 8001 |
 | `make lint` | check the lockfile, run Ruff format and check, run mypy strict |
 | `make test` | run the full test suite with coverage |
 | `make check` | run lint and the full test suite (the CI gate) |
