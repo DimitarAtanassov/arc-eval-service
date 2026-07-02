@@ -18,6 +18,7 @@ from arc_eval_service.db.repositories import (
     EvalRequestRepository,
     EvaluationResultRepository,
 )
+from arc_eval_service.domain.errors import UnknownMetricError
 from arc_eval_service.domain.evaluation import EvaluationCase, MetricScore
 from arc_eval_service.judging.engine import JudgeEngine
 from arc_eval_service.services.evaluation_service import EvaluationService
@@ -106,12 +107,15 @@ def _service(
     )
 
 
-def _request(task_type: str = "summarization") -> EvaluateRequest:
+def _request(
+    task_type: str = "summarization", *, metrics: list[str] | None = None
+) -> EvaluateRequest:
     return EvaluateRequest(
         task_type=task_type,
         input_text="the source article",
         output_text="the summary",
         prompt="Summarize:",
+        metrics=metrics,
         metadata=EvaluationMetadata(inference_id="inf-1", model_id="mdl-1"),
     )
 
@@ -167,6 +171,45 @@ async def test_unknown_task_type_uses_default_metrics() -> None:
     response = await service.evaluate(_request(task_type="question_answering"))
 
     assert {r.metric_name for r in response.results} == {"answer_relevance", "safety"}
+
+
+async def test_explicit_metrics_override_task_policy() -> None:
+    engine = _FakeEngine({"faithfulness": _ok("faithfulness")})
+    requests, results = _SpyRequestRepo(), _SpyResultRepo()
+    service = _service(engine, requests=requests, results=results)
+
+    response = await service.evaluate(_request(metrics=["faithfulness"]))
+
+    # Only the requested metric is scored, not the summarization policy set.
+    assert {r.metric_name for r in response.results} == {"faithfulness"}
+    assert {r.metric_name for r in results.created} == {"faithfulness"}
+
+
+async def test_explicit_metrics_are_deduplicated() -> None:
+    engine = _FakeEngine({"faithfulness": _ok("faithfulness")})
+    results = _SpyResultRepo()
+    service = _service(engine, results=results)
+
+    response = await service.evaluate(
+        _request(metrics=["faithfulness", "faithfulness"])
+    )
+
+    assert {r.metric_name for r in response.results} == {"faithfulness"}
+    assert len(results.created) == 1
+
+
+async def test_unknown_metric_raises_and_persists_nothing() -> None:
+    requests, results = _SpyRequestRepo(), _SpyResultRepo()
+    service = _service(_FakeEngine({}), requests=requests, results=results)
+
+    with pytest.raises(UnknownMetricError) as exc_info:
+        await service.evaluate(_request(metrics=["faithfulness", "does-not-exist"]))
+
+    # The known metric is accepted; only the undefined one is reported, and the
+    # request is rejected before anything is scored or persisted.
+    assert exc_info.value.names == ("does-not-exist",)
+    assert requests.created == []
+    assert results.created == []
 
 
 async def test_errored_metrics_are_excluded_from_response_but_persisted() -> None:
