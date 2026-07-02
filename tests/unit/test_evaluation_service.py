@@ -187,8 +187,7 @@ async def test_errored_metrics_are_excluded_from_response_but_persisted() -> Non
     # An errored metric has no judge provenance and a null prompt template.
     assert all(r.judge is None for r in results.created)
     assert all(
-        r.prompt is not None and r.prompt["template"] is None
-        for r in results.created
+        r.prompt is not None and r.prompt["template"] is None for r in results.created
     )
 
 
