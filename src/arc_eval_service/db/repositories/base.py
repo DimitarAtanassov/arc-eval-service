@@ -26,7 +26,21 @@ class BaseRepository:
         self._sessionmaker = sessionmaker
 
     @asynccontextmanager
-    async def _transaction(self) -> AsyncIterator[AsyncSession]:
-        """Open a session wrapped in a transaction (commit on success, rollback on error)."""
+    async def begin(self) -> AsyncIterator[AsyncSession]:
+        """Open a session in a write transaction (commit on success, rollback on error).
+
+        Sibling repositories built on the same session factory can share the
+        yielded session, so a request and its results are written in one
+        transaction instead of two.
+        """
         async with self._sessionmaker() as session, session.begin():
             yield session
+
+    @asynccontextmanager
+    async def _write(self, session: AsyncSession | None) -> AsyncIterator[AsyncSession]:
+        """Join a caller-provided transaction, or open a private one."""
+        if session is not None:
+            yield session
+        else:
+            async with self.begin() as owned:
+                yield owned

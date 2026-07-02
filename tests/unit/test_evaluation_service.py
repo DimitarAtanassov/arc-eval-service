@@ -7,9 +7,12 @@ that persistence failures are swallowed) without a model or a database.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from typing import cast
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from arc_eval_service.api.schemas import EvaluateRequest, EvaluationMetadata
 from arc_eval_service.catalog import load_catalog
@@ -73,7 +76,13 @@ class _SpyRequestRepo(EvalRequestRepository):
     def __init__(self) -> None:
         self.created: list[NewEvalRequest] = []
 
-    async def create(self, item: NewEvalRequest) -> None:
+    @asynccontextmanager
+    async def begin(self) -> AsyncIterator[AsyncSession]:
+        yield cast(AsyncSession, None)
+
+    async def create(
+        self, item: NewEvalRequest, *, session: AsyncSession | None = None
+    ) -> None:
         self.created.append(item)
 
 
@@ -81,7 +90,12 @@ class _SpyResultRepo(EvaluationResultRepository):
     def __init__(self) -> None:
         self.created: list[NewEvaluationResult] = []
 
-    async def create_many(self, items: Sequence[NewEvaluationResult]) -> None:
+    async def create_many(
+        self,
+        items: Sequence[NewEvaluationResult],
+        *,
+        session: AsyncSession | None = None,
+    ) -> None:
         self.created.extend(items)
 
 
@@ -89,7 +103,13 @@ class _FailingRequestRepo(EvalRequestRepository):
     def __init__(self) -> None:
         pass
 
-    async def create(self, item: NewEvalRequest) -> None:
+    @asynccontextmanager
+    async def begin(self) -> AsyncIterator[AsyncSession]:
+        yield cast(AsyncSession, None)
+
+    async def create(
+        self, item: NewEvalRequest, *, session: AsyncSession | None = None
+    ) -> None:
         raise RuntimeError("db down")
 
 

@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 
 from arc_eval_service.db.engine import Database
 from arc_eval_service.db.records import NewEvalRequest, NewEvaluationResult
@@ -110,3 +111,34 @@ async def test_create_many_empty_is_a_noop(database: Database, clean_db: str) ->
         engine.dispose()
 
     assert count == 0
+
+
+async def test_request_and_results_persist_atomically(
+    database: Database, clean_db: str
+) -> None:
+    """A failed results write rolls back the request in the same transaction."""
+    requests = EvalRequestRepository(database.sessionmaker)
+    results = EvaluationResultRepository(database.sessionmaker)
+
+    # Two results share a primary key, so the batch insert fails. Because both
+    # writes share one transaction, the request row must roll back with them.
+    duplicate = _new_result("req-atomic", "faithfulness")
+
+    async def _write_with_conflict() -> None:
+        async with requests.begin() as session:
+            await requests.create(_new_request("req-atomic"), session=session)
+            await results.create_many([duplicate, duplicate], session=session)
+
+    with pytest.raises(IntegrityError):
+        await _write_with_conflict()
+
+    engine = create_engine(clean_db)
+    try:
+        with engine.connect() as conn:
+            request_count = conn.execute(
+                text("SELECT count(*) FROM eval_requests WHERE id = 'req-atomic'")
+            ).scalar()
+    finally:
+        engine.dispose()
+
+    assert request_count == 0

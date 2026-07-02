@@ -108,8 +108,9 @@ class EvaluationService:
             library=self._library,
         )
         try:
-            await self._requests.create(new_request)
-            await self._results.create_many(new_results)
+            async with self._requests.begin() as session:
+                await self._requests.create(new_request, session=session)
+                await self._results.create_many(new_results, session=session)
         except Exception:
             logger.exception(
                 "failed to persist evaluation",

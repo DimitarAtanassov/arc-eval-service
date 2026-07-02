@@ -10,6 +10,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Version of the POST /v1/evaluate request/response wire contract. Bump on any
+# breaking change so a consumer can detect drift instead of failing silently.
+CONTRACT_VERSION = "1.0.0"
+
 
 class EvaluationMetadata(BaseModel):
     """Caller correlation ids. Extra keys are accepted and stored verbatim."""
@@ -28,7 +32,12 @@ class EvaluateRequest(BaseModel):
     """A completed interaction to score."""
 
     task_type: str = Field(
-        ..., min_length=1, description="Interaction type, e.g. 'summarization'."
+        ...,
+        min_length=1,
+        description=(
+            "Interaction type, e.g. 'summarization'. An unrecognized task type "
+            "falls back to a default metric set rather than being rejected."
+        ),
     )
     input_text: str = Field(
         ..., min_length=1, description="The original input (source text / question)."
@@ -42,8 +51,9 @@ class EvaluateRequest(BaseModel):
     metrics: list[str] | None = Field(
         default=None,
         description=(
-            "Explicit metrics to score. When omitted, the metrics are chosen by "
-            "task_type. An unknown metric name is rejected with 404."
+            "Explicit metrics to score. When omitted or given as an empty list, "
+            "the metrics are chosen by task_type. An unknown metric name is "
+            "rejected with 404."
         ),
     )
     metadata: EvaluationMetadata = Field(default_factory=EvaluationMetadata)
@@ -66,6 +76,13 @@ class EvaluateResponse(BaseModel):
     example, no judge model is configured) are persisted with their error for
     observability but omitted here, so a caller never stores an infrastructure
     failure as a real score of zero.
+
+    ``contract_version`` lets a consumer detect a wire-shape change instead of
+    failing silently when the provider evolves the contract.
     """
 
+    contract_version: str = Field(
+        default=CONTRACT_VERSION,
+        description="Version of the evaluate wire contract this response speaks.",
+    )
     results: list[MetricResult]

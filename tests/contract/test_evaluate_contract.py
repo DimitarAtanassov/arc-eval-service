@@ -6,11 +6,18 @@ added, or removed, they fail -- independent of any database or judge model.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from typing import cast
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from arc_eval_service.api.schemas import EvaluateRequest, EvaluateResponse
+from arc_eval_service.api.schemas import (
+    CONTRACT_VERSION,
+    EvaluateRequest,
+    EvaluateResponse,
+)
 from arc_eval_service.catalog import load_catalog
 from arc_eval_service.db.records import NewEvalRequest, NewEvaluationResult
 from arc_eval_service.db.repositories import (
@@ -62,7 +69,13 @@ class _NoopRequestRepo(EvalRequestRepository):
     def __init__(self) -> None:
         pass
 
-    async def create(self, item: NewEvalRequest) -> None:
+    @asynccontextmanager
+    async def begin(self) -> AsyncIterator[AsyncSession]:
+        yield cast(AsyncSession, None)
+
+    async def create(
+        self, item: NewEvalRequest, *, session: AsyncSession | None = None
+    ) -> None:
         return None
 
 
@@ -70,7 +83,12 @@ class _NoopResultRepo(EvaluationResultRepository):
     def __init__(self) -> None:
         pass
 
-    async def create_many(self, items: Sequence[NewEvaluationResult]) -> None:
+    async def create_many(
+        self,
+        items: Sequence[NewEvaluationResult],
+        *,
+        session: AsyncSession | None = None,
+    ) -> None:
         return None
 
 
@@ -109,7 +127,8 @@ async def test_response_body_matches_the_contract() -> None:
     response = await _service().evaluate(EvaluateRequest.model_validate(REQUEST_BODY))
     payload = response.model_dump()
 
-    assert set(payload) == {"results"}
+    assert set(payload) == {"results", "contract_version"}
+    assert payload["contract_version"] == CONTRACT_VERSION
     assert payload["results"], "expected at least one scored metric"
     for result in payload["results"]:
         assert set(result) == {

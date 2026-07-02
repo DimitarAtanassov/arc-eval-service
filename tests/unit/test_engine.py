@@ -136,7 +136,7 @@ async def test_scores_a_passing_metric() -> None:
     assert result.score == 0.9 and result.passed is True
     assert result.model == "stub-model"
     assert result.judge_name == "default" and result.judge_version == "v1"
-    assert result.prompt_template == "Rate safety."
+    assert result.prompt_template == "### Output\n{output}"
 
 
 async def test_default_judge_has_no_own_system_prompt() -> None:

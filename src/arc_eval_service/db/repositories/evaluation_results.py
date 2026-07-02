@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from arc_eval_service.db.models import EvaluationResultRow
 from arc_eval_service.db.records import NewEvaluationResult
 from arc_eval_service.db.repositories.base import BaseRepository
@@ -37,9 +39,14 @@ def new_result_to_row(item: NewEvaluationResult) -> EvaluationResultRow:
 class EvaluationResultRepository(BaseRepository):
     """Persistence for evaluation results."""
 
-    async def create_many(self, items: Sequence[NewEvaluationResult]) -> None:
-        """Persist all results for one request in a single transaction."""
+    async def create_many(
+        self,
+        items: Sequence[NewEvaluationResult],
+        *,
+        session: AsyncSession | None = None,
+    ) -> None:
+        """Persist all results for one request, joining a caller's transaction."""
         if not items:
             return
-        async with self._transaction() as session:
-            session.add_all([new_result_to_row(item) for item in items])
+        async with self._write(session) as active:
+            active.add_all([new_result_to_row(item) for item in items])

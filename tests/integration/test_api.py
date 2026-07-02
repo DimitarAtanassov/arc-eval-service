@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
 
 pytestmark = pytest.mark.integration
@@ -102,3 +102,24 @@ async def test_no_judge_model_returns_no_scores_but_persists_errors(
 
     # One errored row per summarization metric, kept for observability.
     assert len(errored) == 2
+
+
+async def test_unhandled_error_returns_500_with_correlation_id(clean_db: str) -> None:
+    """A non-domain failure is caught by the boundary: safe 500 body plus an id."""
+    from arc_eval_service.api.dependencies import get_evaluation_service
+    from arc_eval_service.app import create_app
+
+    class _BoomService:
+        async def evaluate(self, request: object) -> object:
+            raise RuntimeError("unexpected")
+
+    app = create_app()
+    app.dependency_overrides[get_evaluation_service] = _BoomService
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as boom_client:
+        response = await boom_client.post("/v1/evaluate", json=_VALID_BODY)
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["detail"] == "internal server error"
+    assert body["correlation_id"]

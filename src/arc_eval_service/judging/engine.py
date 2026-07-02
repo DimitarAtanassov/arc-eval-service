@@ -83,7 +83,7 @@ class JudgeEngine:
             provider=model.provider,
             judge_name=judge_name,
             judge_version=judge_def.version,
-            prompt_template=metric_def.rubric,
+            prompt_template=metric_def.template,
             system_prompt=system,
             temperature=settings.temperature,
             max_tokens=settings.max_tokens,

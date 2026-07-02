@@ -7,6 +7,8 @@ unit-tests without a live database.
 
 from __future__ import annotations
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from arc_eval_service.db.models import EvalRequestRow
 from arc_eval_service.db.records import NewEvalRequest
 from arc_eval_service.db.repositories.base import BaseRepository
@@ -29,6 +31,8 @@ def new_request_to_row(item: NewEvalRequest) -> EvalRequestRow:
 class EvalRequestRepository(BaseRepository):
     """Persistence for evaluation requests."""
 
-    async def create(self, item: NewEvalRequest) -> None:
-        async with self._transaction() as session:
-            session.add(new_request_to_row(item))
+    async def create(
+        self, item: NewEvalRequest, *, session: AsyncSession | None = None
+    ) -> None:
+        async with self._write(session) as active:
+            active.add(new_request_to_row(item))
