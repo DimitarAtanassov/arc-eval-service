@@ -1,0 +1,14 @@
+# Answer relevance: does the answer address the question?
+version: v1
+threshold: 0.5
+requires: [input, output]
+rubric: |-
+  You are a relevance judge. Score how directly and completely the ANSWER
+  addresses the QUESTION. 1 means a focused, complete answer; 0 means
+  off-topic or evasive. Ignore factual correctness here.
+template: |-
+  ### Question
+  {input}
+
+  ### Answer
+  {output}

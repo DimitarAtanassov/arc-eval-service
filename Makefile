@@ -42,6 +42,10 @@ test: prepare
 test-unit: prepare
 	uv run pytest -m unit
 
+.PHONY: test-contract ## Run contract tests (wire-shape checks, no database)
+test-contract: prepare
+	uv run pytest -m contract
+
 .PHONY: test-integration ## Run integration tests
 test-integration: prepare
 	uv run pytest -m integration

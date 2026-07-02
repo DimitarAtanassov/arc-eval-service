@@ -1,121 +1,102 @@
-# Service — arc-evaluator
+# Service: arc-eval-service
 
-**Role:** measure response quality, and own the span/trace store. **Online**
-(inline, best-effort) on the hot path, and **offline** on spans the OTel
-Collector fans out to it. Both modes share the same evaluators and write results
-to the **evaluation database**. The same OTLP ingest persists every span it
-receives, so the evaluator serves the real span tree to `arc-platform`
-([ADR-0006](../adr/0006-postgres-span-store.md)). The online/offline split is
-[ADR-0008](../adr/0008-online-offline-evaluation.md).
+Audience: backend engineers. Reading time: 4 minutes.
 
-For Phase 1: **LLM-as-a-judge only** — no heuristic or deterministic metrics. A
-fast judge runs online; heavier judges run offline. Judge models come from the
-**arc provider** by default; tenants may bring their own judge models (BYO) to
-fit cost, latency and availability.
+## Role
 
----
+Score one completed AI interaction and return a quality score per metric. Scoring
+is synchronous on the request, best effort, and LLM-as-a-judge. The service owns
+the metrics, their rubrics, the judges, and the judge-model calls. Metric and
+judge prompts live in a YAML library, not in code. It does not run inference,
+route requests, or decide a caller's response.
 
-## API
+The wire contract is in the [README](../README.md). This document is the internal
+design.
 
-```
-POST /v1/evaluate            # score a completed interaction, inline
-POST /v1/otlp/traces         # OTLP/HTTP ingest from the collector (gzip-aware)
-GET  /v1/traces/{trace_id}   # the real span tree for one trace
-GET  /health
-```
-
-```jsonc
-// request
-{ "request": {...}, "response": {...}, "tenant": "acme", "judges": ["faithfulness"] }
-
-// response
-{ "scores": { "faithfulness": 0.87 }, "labels": { "faithfulness": "pass" }, "passed": true }
-```
-
----
-
-## Internal design — judge registry + model port
-
-```mermaid
-flowchart TD
-    REG["Judge registry"] --> F["FaithfulnessJudge"]
-    REG --> R["RelevanceJudge"]
-    REG --> S["SafetyJudge"]
-    REG --> RUN["render prompt → call judge model → parse score"]
-    RUN --> PORT["JudgeModel (port)"]
-    PORT --> ARC["arc provider (default)"]
-    PORT --> BYO["tenant BYO judge model"]
-```
-
-- Each **judge is a pure prompt + parser**: `(request, response) -> Score`; the
-  model call is the only I/O, behind a port.
-- The **registry** maps a name to a judge; the active set is config-driven.
-  Adding a metric = write a prompt + parser, register it.
-- **Models are pluggable** via the `JudgeModel` port: arc provider by default,
-  tenant BYO model otherwise — see [ADR-0011](../adr/0011-pluggable-models.md).
-
-```
-arc_evaluator/
-  judges/         # prompt + parser per metric (pure)
-  registry.py     # name → judge
-  models/         # JudgeModel port + arc/BYO adapters
-  api/            # FastAPI routes (shell)
-  config.py       # active judges, thresholds, model bindings
-  main.py
-```
-
-Scores are emitted as `arc.eval.*` span attributes and persisted to the
-**evaluation database** for query by `arc-platform`.
-
----
-
-## Span store + OTLP ingest
-
-The evaluator also owns the **span/trace store** ([ADR-0006](../adr/0006-postgres-span-store.md)).
-The Collector fans every span to `POST /v1/otlp/traces` as OTLP/HTTP JSON; the
-evaluator normalises and upserts each span (idempotent on `span_id`) and serves
-the real span tree at `GET /v1/traces/{trace_id}` so `arc-platform` renders the
-actual `arc.llm.*` (inference) and `arc.eval.*` (evaluation) attributes instead
-of a waterfall reconstructed from latencies.
+## Scoring flow
 
 ```mermaid
 flowchart LR
-    COL["OTel Collector"] -->|gzip OTLP/JSON| ING["POST /v1/otlp/traces"]
-    ING --> STORE[("span store")]
-    ING -->|inbound inference spans only| JUDGE["offline judging"]
-    PLAT["arc-platform"] -->|GET /v1/traces/id| STORE
+    API["POST /v1/evaluate"] --> SVC["EvaluationService"]
+    SVC -->|task_type -> metrics| ENG["JudgeEngine"]
+    ENG --> LIB["PromptLibrary (metrics + judges, YAML)"]
+    ENG --> PORT["JudgeModel (port)"]
+    PORT --> OAI["OpenAI-compatible adapter"]
+    PORT --> ANT["Anthropic adapter"]
+    SVC --> REQ["EvalRequestRepository"]
+    SVC --> RES["EvaluationResultRepository"]
+    REQ --> DB[("Postgres")]
+    RES --> DB
 ```
 
-Two rules keep ingest spec-conformant and loop-free:
+1. `EvaluationService` picks the metrics for the request's `task_type`.
+2. It scores them concurrently through `JudgeEngine`, one metric at a time,
+   each rendered to a strict-JSON verdict prompt and run on the resolved model.
+3. It persists the request and every result, then returns the metrics that scored.
 
-- **gzip-aware receiver.** OTLP/HTTP exporters compress request bodies by
-  default; an ASGI middleware decompresses them so ingest does not `400` on a
-  gzipped batch.
-- **No feedback loop.** The evaluator stores every span but offline-judges only
-  spans from *other* services (it skips spans whose resource `service.name` is
-  the evaluator), and its `/v1/otlp/traces` path is excluded from
-  self-instrumentation. Otherwise judging its own judge calls (which are
-  `arc.llm.call` spans) would feed the Collector and re-ingest without end.
+A **metric** is a criterion (a rubric, the case fields it needs, a case-layout
+template, and a threshold). A **judge** is prompt scaffolding (an optional system
+prompt plus sampling settings) bound to a model profile. Both are data, loaded
+from per-file YAML. The engine composes them; the model call and verdict parsing
+are its only logic. Add or edit a metric or judge by editing YAML, not code.
 
----
+## task_type to metrics
 
-## Constraints
+The mapping is a small in-code table in
+[service.py](../src/arc_eval_service/evaluation/service.py), because it is scoring
+policy, not configuration.
 
-Online evaluation is on the hot path, so it is **strictly bounded**:
+| task_type | metrics |
+| --- | --- |
+| `summarization` | `faithfulness`, `answer_relevance` |
+| (any other) | `answer_relevance`, `safety` |
 
-- a single fast judge model call, capped by a tight timeout
-- **best-effort**: any error or timeout degrades gracefully — a request is never
-  failed because scoring failed
-- heavy/multi-judge evaluation runs offline on collector-fed traces
+## Prompts and judges
 
----
+Metric and judge prompts live in per-file YAML under
+[prompts/metrics/](../src/arc_eval_service/prompts/metrics) and
+[prompts/judges/](../src/arc_eval_service/prompts/judges), one file per metric or
+judge, loaded and validated once at startup (a malformed file fails boot, not a
+request). The engine
+composes the system prompt as an ordered pipeline of optional layers:
 
-## Testing
+```text
+system = [judge.system_prompt?] + metric.rubric + verdict instruction
+user   = render(metric.template, case)
+```
 
-- **Unit:** each judge's prompt builder + parser tested against a fake model.
-- **Aggregation:** pass/fail-against-threshold logic.
-- **Budget:** a guard test asserting the online judge stays within its timeout.
+A judge with no system prompt of its own runs the metric rubric only; a judge with
+one has it prepended. The verdict instruction (the JSON output contract) is always
+last and lives in code next to the parser, so it cannot drift from
+[parse_verdict](../src/arc_eval_service/judging/verdict.py). Adding a metric or a
+judge, or tuning a rubric, is a YAML edit; the code does not change.
 
-## What it does **not** own
-Benchmark dataset curation, orchestration, the gateway response. It reports and
-stores scores; it does not decide the response.
+## Judge models
+
+A judge in the library names a `model_profile`; the profile is the transport and
+credentials (provider, model id, optional `base_url`, and the env var holding the
+API key). Secrets resolve at call time, never stored in a profile, a judge, a
+request, or a log. Models are pluggable through the `JudgeModel` port: one
+OpenAI-compatible adapter covers OpenAI, Azure OpenAI, and self-hosted servers
+(vLLM, Ollama) by changing `base_url`. Adding a vendor is a new adapter under
+[judging/providers](../src/arc_eval_service/judging/providers); nothing else
+changes.
+
+## Failure handling
+
+| Condition | Behavior |
+| --- | --- |
+| One metric fails to score (bad verdict, model error) | That metric is persisted with its error and omitted from the response. Other metrics are unaffected. |
+| No judge model configured | Every metric errors. The response is `{"results": []}`; the errored rows are still persisted. |
+| The observability write fails | Logged and swallowed. The caller still receives its scores. |
+| Required request field missing | `422`, before any scoring. |
+
+Scoring never fails the request: the judge engine degrades a failed metric to an
+errored result rather than raising. Persistence is the caller's bookkeeping, not
+their availability, so it never fails the response.
+
+## What it does not own
+
+Inference, routing, guardrails, dataset curation, or the roll-up of many metrics
+into a single verdict. It reports and stores per-metric scores; the caller decides
+what they mean.

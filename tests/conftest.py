@@ -2,8 +2,9 @@
 
 A session-scoped Postgres testcontainer backs every DB-touching test; pure-logic
 unit tests need none of it. The ``client`` fixture binds an httpx client to the
-ASGI app against the test database. No model or network is involved: the
-ingestion endpoint only stores data.
+ASGI app with no judge model configured (so metrics error and no scores are
+returned); ``stub_client`` overrides only the judge model so the happy path
+(score -> persist -> respond) runs end to end without a network call.
 """
 
 from __future__ import annotations
@@ -15,8 +16,41 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, text
 
-# Truncated child-first; CASCADE covers the foreign keys either way.
-_TABLES = ("evaluation_runs", "eval_inputs", "metrics")
+from arc_eval_service.judging.model import ModelCompletion, ModelSettings
+from arc_eval_service.judging.profiles import JudgeModel, ModelProfile, ModelRegistry
+
+# Truncated child-first; CASCADE covers the foreign key either way.
+_TABLES = ("evaluation_results", "eval_requests")
+
+# A judge verdict that parses to a passing score, used by ``stub_client``.
+_STUB_VERDICT = '{"score": 0.9, "label": "pass", "explanation": "grounded in the source"}'
+
+
+class _StubModel:
+    """A judge model that returns a fixed passing verdict (no network)."""
+
+    provider = "stub"
+    name = "stub-judge"
+
+    async def complete(
+        self, *, system: str | None, prompt: str, settings: ModelSettings
+    ) -> ModelCompletion:
+        return ModelCompletion(text=_STUB_VERDICT, model=self.name)
+
+
+class _StubModelRegistry(ModelRegistry):
+    """A model registry that always resolves to :class:`_StubModel`."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            [ModelProfile(name="default", provider="openai_compatible", model="stub")],
+            default="default",
+        )
+
+    def resolve(
+        self, name: str | None = None, *, model_override: str | None = None
+    ) -> JudgeModel:
+        return _StubModel()
 
 
 @pytest.fixture(scope="session")
@@ -55,7 +89,7 @@ def _reset_caches() -> None:
     from arc_eval_service.core import deps
     from arc_eval_service.core.config import get_settings
 
-    for cache in (deps.get_database, get_settings):
+    for cache in (deps.get_database, deps.get_prompt_library, get_settings):
         cache.cache_clear()
 
 
@@ -76,10 +110,48 @@ def clean_db(database_url: str) -> str:
 
 @pytest.fixture
 async def client(clean_db: str) -> AsyncIterator[AsyncClient]:
-    """An httpx AsyncClient bound to the ASGI app, against the test database."""
+    """A client bound to the ASGI app with no judge model configured."""
     from arc_eval_service.app import create_app
 
     app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as async_client:
+        yield async_client
+
+
+@pytest.fixture
+async def stub_client(clean_db: str) -> AsyncIterator[AsyncClient]:
+    """A client whose judge model is stubbed to a fixed passing verdict.
+
+    Only the model call is faked: the real service, engine, metrics, repositories
+    and database run, so the score -> persist -> respond path is exercised end to
+    end without a network judge model.
+    """
+    from arc_eval_service.app import create_app
+    from arc_eval_service.core.deps import get_database, get_evaluation_service
+    from arc_eval_service.db.repositories import (
+        EvalRequestRepository,
+        EvaluationResultRepository,
+    )
+    from arc_eval_service.evaluation.service import EvaluationService
+    from arc_eval_service.judging.engine import JudgeEngine
+    from arc_eval_service.prompts.loader import load_library
+
+    def _build_service() -> EvaluationService:
+        database = get_database()
+        library = load_library()
+        engine = JudgeEngine(
+            library=library, models=_StubModelRegistry(), default_judge="default"
+        )
+        return EvaluationService(
+            engine=engine,
+            library=library,
+            requests=EvalRequestRepository(database.sessionmaker),
+            results=EvaluationResultRepository(database.sessionmaker),
+        )
+
+    app = create_app()
+    app.dependency_overrides[get_evaluation_service] = _build_service
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:
         yield async_client

@@ -1,27 +1,27 @@
 """Domain errors.
 
-Services and the judge engine raise these instead of importing FastAPI; the app
-layer maps them to HTTP responses, keeping HTTP concerns out of the lower layers.
+The prompt library, model registry and judge engine raise these instead of
+importing FastAPI. They are captured per-metric by the judge engine and surfaced
+as errored results, so a single metric failure never fails the whole request.
 """
 
 from __future__ import annotations
 
 
-class NotFoundError(Exception):
-    """Raised when a requested resource does not exist."""
-
-    def __init__(self, resource: str, identifier: str) -> None:
-        self.resource = resource
-        self.identifier = identifier
-        super().__init__(f"{resource} '{identifier}' not found")
-
-
 class UnknownMetricError(ValueError):
-    """Raised when a request references a metric that is not registered."""
+    """Raised when a request references a metric that is not defined."""
 
     def __init__(self, name: str) -> None:
         self.name = name
         super().__init__(f"unknown metric '{name}'")
+
+
+class UnknownJudgeError(ValueError):
+    """Raised when a request references a judge that is not defined."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"unknown judge '{name}'")
 
 
 class UnknownModelError(ValueError):

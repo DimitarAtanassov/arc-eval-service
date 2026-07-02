@@ -1,19 +1,15 @@
-"""Evaluation domain types used by the judging libraries.
+"""Evaluation domain types shared by the prompt library and the judging engine.
 
-The interaction under test (:class:`EvaluationCase`), the metric to score it with
-(:class:`MetricSpec`) and the per-metric outcome (:class:`EvaluationResult`).
-There is no aggregate: each metric produces one independent result, and any
-roll-up is the caller's concern.
+The interaction under test (:class:`EvaluationCase`) and the per-metric outcome
+(:class:`EvaluationResult`). There is no aggregate: each metric produces one
+independent result, and any roll-up is the caller's concern.
 
-These types are the contract the metric and judging libraries share; they are not
-tied to any HTTP endpoint.
+These types are not tied to any HTTP endpoint.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-
-type ConfigValue = str | int | float | bool
 
 
 class EvaluationCase(BaseModel):
@@ -33,29 +29,13 @@ class EvaluationCase(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
-class MetricSpec(BaseModel):
-    """Names a metric, the model profile to score it on, and any config.
-
-    ``model`` is a server-side profile name; ``model_override`` swaps the concrete
-    model id within that profile. ``config`` carries per-metric knobs (e.g. the
-    custom metric's rubric or a ``pass_threshold`` override).
-    """
-
-    metric: str = Field(..., min_length=1, description="Metric registry key.")
-    model: str | None = Field(
-        default=None, description="Model profile name; default profile when omitted."
-    )
-    model_override: str | None = Field(
-        default=None, description="Override the model id within the profile."
-    )
-    config: dict[str, ConfigValue] = Field(default_factory=dict)
-
-
 class EvaluationResult(BaseModel):
     """Outcome of scoring one metric against one case.
 
     ``passed`` is the metric's own threshold applied to ``score`` (not an
-    aggregate). ``model`` records which model id served the judgement.
+    aggregate). ``model`` records which model id served the judgement. The
+    provenance fields (``provider`` through ``max_tokens``) record how the score
+    was produced; they are persisted for audit and are not returned to callers.
     """
 
     metric: str
@@ -66,3 +46,12 @@ class EvaluationResult(BaseModel):
     explanation: str | None = None
     latency_ms: float = Field(default=0.0, ge=0.0)
     error: str | None = None
+
+    # Judge-call provenance (persisted, not returned).
+    judge_name: str | None = None
+    judge_version: str | None = None
+    provider: str | None = None
+    prompt_template: str | None = None
+    system_prompt: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None

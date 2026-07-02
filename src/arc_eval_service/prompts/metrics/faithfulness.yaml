@@ -1,0 +1,15 @@
+# Faithfulness: is the answer supported by the provided context?
+version: v1
+threshold: 0.5
+requires: [output, context]
+rubric: |-
+  You are a strict faithfulness judge. Score how well the ANSWER is supported
+  by the CONTEXT. 1 means every claim is grounded in the context; 0 means the
+  answer is unsupported or contradicts it. Penalise any claim not entailed by
+  the context.
+template: |-
+  ### Context
+  {context}
+
+  ### Answer
+  {output}

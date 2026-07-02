@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from arc_eval_service.models.profiles import ModelProfile
+from arc_eval_service.judging.profiles import ModelProfile
 
 
 class Settings(BaseSettings):
@@ -27,25 +28,24 @@ class Settings(BaseSettings):
     service_name: str = "arc-eval-service"
     log_level: str = "INFO"
 
-    # Upper bound on a single batch request, guarding the store.
-    max_batch_size: int = 100
-
-    # When set, the service persists to Postgres; otherwise it uses the in-memory
-    # store. Use the psycopg3 driver, e.g.
+    # Async Postgres URL (required at runtime). Use the psycopg3 driver, e.g.
     #   postgresql+psycopg://user:pass@host:5432/arc_eval
     database_url: str | None = None
 
     # --- judge models (BYOK) ---------------------------------------------
     # JSON list of server-side model profiles; the API key is referenced by env
     # var name (api_key_env), never stored here. Example:
-    #   ARC_EVAL_MODEL_PROFILES='[{"name":"default","provider":"anthropic",
-    #     "model":"claude-opus-4-8","api_key_env":"ANTHROPIC_API_KEY"}]'
-    model_profiles: list[ModelProfile] = []
-    default_model: str | None = None  # profile name used when a request omits one
-    default_judge: str = "safety"  # judge used for offline (OTel) ingestion
+    #   ARC_EVAL_MODEL_PROFILES='[{"name":"default","provider":"openai_compatible",
+    #     "model":"gpt-4o-mini","api_key_env":"OPENAI_API_KEY"}]'
+    model_profiles: list[ModelProfile] = Field(default_factory=list)
+    default_model: str | None = None  # profile name used when a judge omits one
 
-    # --- offline (OTel) ingestion ----------------------------------------
-    ingest_enabled: bool = True
+    # --- prompts / judging ------------------------------------------------
+    # Judge used when a request does not name one; must exist in the library.
+    default_judge: str = "default"
+    # Optional path to a prompts directory (with metrics/ and judges/
+    # subdirectories) overriding the bundled prompt library.
+    prompts_path: str | None = None
 
 
 @lru_cache(maxsize=1)

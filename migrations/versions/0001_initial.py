@@ -1,12 +1,12 @@
-"""initial schema: eval_inputs, metrics, evaluation_runs
+"""initial schema: eval_requests, evaluation_results
 
-The service owns three tables: ``eval_inputs`` holds one LLM interaction to
-evaluate; ``metrics`` holds a metric definition; ``evaluation_runs`` holds one
-metric run against one input (runs cascade-delete with their input).
+The service owns two tables. ``eval_requests`` holds one interaction submitted for
+evaluation; ``evaluation_results`` holds one metric score per row against that
+interaction (results cascade-delete with their request).
 
 Revision ID: 0001
 Revises:
-Create Date: 2026-06-29
+Create Date: 2026-07-01
 
 """
 
@@ -27,27 +27,15 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.create_table(
-        "eval_inputs",
+        "eval_requests",
         sa.Column("id", sa.String(), nullable=False),
-        sa.Column("rendered_prompt", sa.Text(), nullable=False),
-        sa.Column("system_message", sa.Text(), nullable=True),
-        sa.Column("model_response", postgresql.JSONB(), nullable=False),
-        sa.Column("model_config", postgresql.JSONB(), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index("ix_eval_inputs_created_at", "eval_inputs", ["created_at"])
-
-    op.create_table(
-        "metrics",
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("name", sa.String(), nullable=False),
+        sa.Column("task_type", sa.String(), nullable=False),
+        sa.Column("input_text", sa.Text(), nullable=False),
+        sa.Column("output_text", sa.Text(), nullable=False),
         sa.Column("prompt", sa.Text(), nullable=True),
+        sa.Column("inference_id", sa.String(), nullable=True),
+        sa.Column("model_id", sa.String(), nullable=True),
+        sa.Column("request_metadata", postgresql.JSONB(), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -55,18 +43,28 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("name"),
     )
+    op.create_index(
+        "ix_eval_requests_inference_id", "eval_requests", ["inference_id"]
+    )
+    op.create_index("ix_eval_requests_created_at", "eval_requests", ["created_at"])
 
     op.create_table(
-        "evaluation_runs",
+        "evaluation_results",
         sa.Column("id", sa.String(), nullable=False),
-        sa.Column("eval_input_id", sa.String(), nullable=False),
-        sa.Column("metric_id", sa.String(), nullable=False),
-        sa.Column("judge_config", postgresql.JSONB(), nullable=False),
-        sa.Column("score", sa.Float(), nullable=True),
-        sa.Column("passed", sa.Boolean(), nullable=True),
-        sa.Column("explanation", sa.Text(), nullable=True),
+        sa.Column("eval_request_id", sa.String(), nullable=False),
+        sa.Column("inference_id", sa.String(), nullable=True),
+        sa.Column("model_id", sa.String(), nullable=True),
+        sa.Column("metric_name", sa.String(), nullable=False),
+        sa.Column("score", sa.Float(), nullable=False),
+        sa.Column("passed", sa.Boolean(), nullable=False),
+        sa.Column("reasoning", sa.Text(), nullable=True),
+        sa.Column("evaluator_name", sa.String(), nullable=False),
+        sa.Column("evaluator_version", sa.String(), nullable=True),
+        sa.Column("judge", postgresql.JSONB(), nullable=True),
+        sa.Column("prompt", postgresql.JSONB(), nullable=True),
+        sa.Column("latency_ms", sa.Float(), nullable=False),
+        sa.Column("error", sa.Text(), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -74,25 +72,41 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.ForeignKeyConstraint(
-            ["eval_input_id"], ["eval_inputs.id"], ondelete="CASCADE"
+            ["eval_request_id"], ["eval_requests.id"], ondelete="CASCADE"
         ),
-        sa.ForeignKeyConstraint(["metric_id"], ["metrics.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
-        "ix_evaluation_runs_eval_input_id", "evaluation_runs", ["eval_input_id"]
+        "ix_evaluation_results_eval_request_id",
+        "evaluation_results",
+        ["eval_request_id"],
     )
-    op.create_index("ix_evaluation_runs_metric_id", "evaluation_runs", ["metric_id"])
-    op.create_index("ix_evaluation_runs_created_at", "evaluation_runs", ["created_at"])
+    op.create_index(
+        "ix_evaluation_results_inference_id", "evaluation_results", ["inference_id"]
+    )
+    op.create_index(
+        "ix_evaluation_results_metric_name", "evaluation_results", ["metric_name"]
+    )
+    op.create_index(
+        "ix_evaluation_results_created_at", "evaluation_results", ["created_at"]
+    )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_evaluation_runs_created_at", table_name="evaluation_runs")
-    op.drop_index("ix_evaluation_runs_metric_id", table_name="evaluation_runs")
-    op.drop_index("ix_evaluation_runs_eval_input_id", table_name="evaluation_runs")
-    op.drop_table("evaluation_runs")
+    op.drop_index(
+        "ix_evaluation_results_created_at", table_name="evaluation_results"
+    )
+    op.drop_index(
+        "ix_evaluation_results_metric_name", table_name="evaluation_results"
+    )
+    op.drop_index(
+        "ix_evaluation_results_inference_id", table_name="evaluation_results"
+    )
+    op.drop_index(
+        "ix_evaluation_results_eval_request_id", table_name="evaluation_results"
+    )
+    op.drop_table("evaluation_results")
 
-    op.drop_table("metrics")
-
-    op.drop_index("ix_eval_inputs_created_at", table_name="eval_inputs")
-    op.drop_table("eval_inputs")
+    op.drop_index("ix_eval_requests_created_at", table_name="eval_requests")
+    op.drop_index("ix_eval_requests_inference_id", table_name="eval_requests")
+    op.drop_table("eval_requests")

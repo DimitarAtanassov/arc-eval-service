@@ -3,7 +3,7 @@
 A **profile** is a named, server-side model configuration: which provider, which
 model id, an optional ``base_url`` (self-hosted), and the **name of the env var**
 that holds the API key. The secret itself is never stored in the profile, a
-request body, a span or a log -- only resolved at call time from the environment.
+request body or a log -- only resolved at call time from the environment.
 
 Requests select a profile by name and may override the concrete model id within
 it. This keeps credentials an operator concern and model choice a caller concern.

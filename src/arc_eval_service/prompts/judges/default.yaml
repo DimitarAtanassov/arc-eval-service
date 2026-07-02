@@ -1,0 +1,6 @@
+# A judge with no system prompt of its own: it runs the metric rubric only.
+# model_profile is omitted, so it uses the default model profile
+# (ARC_EVAL_DEFAULT_MODEL, or the only configured profile).
+version: v1
+temperature: 0.0
+max_tokens: 1024
