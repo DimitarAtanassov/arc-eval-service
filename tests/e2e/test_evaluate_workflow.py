@@ -18,10 +18,10 @@ async def test_evaluate_then_read_back_the_results(
     stub_client: AsyncClient, clean_db: str
 ) -> None:
     body = {
-        "task_type": "summarization",
         "input_text": "The Eiffel Tower is a landmark in Paris, France.",
         "output_text": "The Eiffel Tower is in Paris.",
         "prompt": "Summarize the text.",
+        "metrics": ["faithfulness", "answer_relevance"],
         "metadata": {"inference_id": "inf-42", "model_id": "qwen-1.5b"},
     }
 

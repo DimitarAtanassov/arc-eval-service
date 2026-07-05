@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from typing import cast
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from arc_eval_service.api.schemas import (
@@ -32,10 +33,10 @@ pytestmark = pytest.mark.contract
 
 # The exact request body arc-model-lab sends after inference.
 REQUEST_BODY = {
-    "task_type": "summarization",
     "input_text": "the source article",
     "output_text": "the summary",
     "prompt": "Summarize the article.",
+    "metrics": ["faithfulness", "answer_relevance"],
     "metadata": {"inference_id": "inf-1", "model_id": "mdl-1"},
 }
 
@@ -104,23 +105,22 @@ def _service() -> EvaluationService:
 def test_request_body_matches_the_contract() -> None:
     request = EvaluateRequest.model_validate(REQUEST_BODY)
 
-    assert request.task_type == "summarization"
     assert request.input_text == "the source article"
     assert request.output_text == "the summary"
     assert request.prompt == "Summarize the article."
+    assert request.metrics == ["faithfulness", "answer_relevance"]
     assert request.metadata.inference_id == "inf-1"
     assert request.metadata.model_id == "mdl-1"
 
 
-def test_request_accepts_optional_metrics() -> None:
-    # Omitted: the caller relies on task-type policy (the default contract).
-    assert EvaluateRequest.model_validate(REQUEST_BODY).metrics is None
-
-    # Present: the caller selects the metrics to score explicitly.
-    selective = EvaluateRequest.model_validate(
-        {**REQUEST_BODY, "metrics": ["faithfulness"]}
-    )
-    assert selective.metrics == ["faithfulness"]
+def test_request_requires_explicit_metrics() -> None:
+    # Metrics are mandatory: the service no longer infers them from a task type.
+    without_metrics = {k: v for k, v in REQUEST_BODY.items() if k != "metrics"}
+    with pytest.raises(ValidationError):
+        EvaluateRequest.model_validate(without_metrics)
+    # An empty metrics list is rejected too.
+    with pytest.raises(ValidationError):
+        EvaluateRequest.model_validate({**REQUEST_BODY, "metrics": []})
 
 
 async def test_response_body_matches_the_contract() -> None:

@@ -19,7 +19,6 @@ erDiagram
 ```sql
 CREATE TABLE eval_requests (
     id                text PRIMARY KEY,
-    task_type         text NOT NULL,
     input_text        text NOT NULL,
     output_text       text NOT NULL,
     prompt            text,

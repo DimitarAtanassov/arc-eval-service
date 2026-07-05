@@ -18,7 +18,6 @@ def new_request_to_row(item: NewEvalRequest) -> EvalRequestRow:
     """Map a new eval request to its row (``created_at`` is stamped by the database)."""
     return EvalRequestRow(
         id=item.id,
-        task_type=item.task_type,
         input_text=item.input_text,
         output_text=item.output_text,
         prompt=item.prompt,

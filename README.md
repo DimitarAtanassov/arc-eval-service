@@ -18,18 +18,17 @@ offline pipeline; observability is the two database tables, queried with SQL.
 POST /v1/evaluate
 ```
 
-Send one completed interaction. The service scores it against the metrics you
-name, or the default metrics for the `task_type` when you name none. It scores
-each metric with a judge model, saves the request and every result, and returns
-the metrics that scored.
+Send one completed interaction, naming the metrics to score. It scores each
+metric with a judge model, saves the request and every result, and returns the
+metrics that scored.
 
 ```jsonc
 // request
 {
-  "task_type": "summarization",
   "input_text": "Paris is the capital of France and its largest city.",
   "output_text": "Paris is France's capital.",
   "prompt": "Summarize the text.",
+  "metrics": ["faithfulness", "answer_relevance"],
   "metadata": { "inference_id": "inf-1", "model_id": "qwen-1.5b" }
 }
 
@@ -47,16 +46,15 @@ the metrics that scored.
 }
 ```
 
-`task_type`, `input_text`, and `output_text` are required. A request that omits one
-is rejected with `422`. The only other route is `GET /health`, a liveness check.
+`input_text`, `output_text`, `prompt`, `metrics`, and `metadata` are all required.
+A request that omits one, or names an empty `metrics` list, is rejected with `422`.
+The only other route is `GET /health`, a liveness check.
 
 ### How scoring works
 
-- `task_type` selects the metrics. `summarization` runs `faithfulness` and
-  `answer_relevance`. An unknown task type falls back to a default set. The
-  mapping lives in [policy.py](src/arc_eval_service/services/policy.py). A request
-  may instead name explicit `metrics` to score; an unknown metric name is rejected
-  with `404` before anything is scored or persisted.
+- The caller names the `metrics` to score on every request; the service scores
+  exactly those. There is no task-type inference. An unknown metric name is
+  rejected with `404` before anything is scored or persisted.
 - Metric and judge prompts live in per-file YAML under
   [catalog/metric/](src/arc_eval_service/catalog/metric) and
   [catalog/judge/](src/arc_eval_service/catalog/judge), loaded and validated at
@@ -78,7 +76,6 @@ erDiagram
 
     eval_requests {
         uuid id PK
-        text task_type
         text input_text
         text output_text
         text prompt
@@ -132,7 +129,6 @@ src/arc_eval_service/
     errors.py       # domain errors, captured per-metric by the judge engine
   services/         # application layer
     evaluation_service.py  # score -> persist -> respond
-    policy.py       # task_type -> metrics mapping
     mapping.py      # pure wire <-> domain <-> record mappers
   judging/          # judge engine, the JudgeModel port, registry, provider adapters
   catalog/          # the evaluator catalog
@@ -211,7 +207,7 @@ Score an interaction:
 ```bash
 curl -s localhost:8000/v1/evaluate \
   -H 'content-type: application/json' \
-  -d '{"task_type":"summarization","input_text":"Paris is the capital of France.","output_text":"Paris is the capital.","metadata":{"inference_id":"inf-1"}}'
+  -d '{"input_text":"Paris is the capital of France.","output_text":"Paris is the capital.","prompt":"Summarize the text.","metrics":["faithfulness","answer_relevance"],"metadata":{"inference_id":"inf-1"}}'
 ```
 
 ## Testing

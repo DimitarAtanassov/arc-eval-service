@@ -18,7 +18,7 @@ design.
 ```mermaid
 flowchart LR
     API["POST /v1/evaluate"] --> SVC["EvaluationService"]
-    SVC -->|"metrics or task_type"| ENG["JudgeEngine"]
+    SVC -->|"metrics"| ENG["JudgeEngine"]
     ENG --> LIB["Catalog (metric + judge, YAML)"]
     ENG --> PORT["JudgeModel (port)"]
     PORT --> OAI["OpenAI-compatible adapter"]
@@ -28,9 +28,8 @@ flowchart LR
     RES --> DB
 ```
 
-1. `EvaluationService` chooses the metrics: the ones the request names, or the
-   `task_type` defaults when it names none. An unknown metric name is rejected
-   with `404` before any scoring.
+1. `EvaluationService` validates the metrics the request names against the
+   catalog. An unknown metric name is rejected with `404` before any scoring.
 2. It scores them concurrently through `JudgeEngine`, one metric at a time,
    each run on the resolved model requesting a structured `Verdict` response.
 3. It persists the request and every result, then returns the metrics that scored.
@@ -41,19 +40,11 @@ prompt plus sampling settings) bound to a model profile. Both are data, loaded
 from per-file YAML. The engine composes them; the model call and verdict parsing
 are its only logic. Add or edit a metric or judge by editing YAML, not code.
 
-## task_type to metrics
+## Metric selection
 
-The mapping is a small in-code table in
-[policy.py](../src/arc_eval_service/services/policy.py), because it is scoring
-policy, not configuration.
-
-| task_type | metrics |
-| --- | --- |
-| `summarization` | `faithfulness`, `answer_relevance` |
-| (any other) | `answer_relevance`, `safety` |
-
-A request that names `metrics` skips this table and scores exactly those. An
-unknown metric name is rejected with `404` before any scoring.
+The caller names the metrics to score on every request. There is no server-side
+task classification: the service scores exactly the metrics it is given, and an
+unknown metric name is rejected with `404` before any scoring or persistence.
 
 ## Metrics and judges
 

@@ -37,10 +37,10 @@ def _library() -> Catalog:
 
 def _request() -> EvaluateRequest:
     return EvaluateRequest(
-        task_type="summarization",
         input_text="source",
         output_text="summary",
         prompt="Summarize:",
+        metrics=["safety"],
         metadata=EvaluationMetadata(inference_id="inf-1", model_id="mdl-1"),
     )
 
@@ -51,7 +51,7 @@ def test_build_case_passes_input_as_grounding_context() -> None:
     assert case.output == "summary"
     # input_text doubles as grounding context for grounded metrics.
     assert case.context == ["source"]
-    assert case.metadata == {"task_type": "summarization"}
+    assert case.metadata == {}
 
 
 def test_metric_version_returns_none_for_unknown_metric() -> None:

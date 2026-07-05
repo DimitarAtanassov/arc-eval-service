@@ -18,7 +18,6 @@ class NewEvalRequest(BaseModel):
     """An interaction to persist before scoring."""
 
     id: str
-    task_type: str
     input_text: str
     output_text: str
     prompt: str | None
