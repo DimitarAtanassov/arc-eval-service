@@ -12,6 +12,7 @@ from arc_eval_service.api.dependencies import get_database
 from arc_eval_service.api.errors import register_exception_handlers
 from arc_eval_service.api.routes.evaluate import router as evaluate_router
 from arc_eval_service.api.routes.health import router as health_router
+from arc_eval_service.api.routes.reads import router as reads_router
 from arc_eval_service.core.config import get_settings
 from arc_eval_service.core.logging import configure_logging
 
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(evaluate_router)
+    app.include_router(reads_router)
     register_exception_handlers(app)
     return app
 
