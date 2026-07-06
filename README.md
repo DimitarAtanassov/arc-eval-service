@@ -199,7 +199,7 @@ at the compose Postgres on localhost.
 
 ```bash
 docker compose up db
-make run                 # loads .env, uvicorn on port 8001
+make run                 # loads .env; ARC_EVAL_API_PORT sets the port (default 8000)
 ```
 
 Score an interaction:
@@ -226,7 +226,7 @@ make test-e2e            # score, persist, read the rows back
 
 | Target | What it does |
 | --- | --- |
-| `make run` | run the app locally with auto-reload on port 8001 |
+| `make run` | run the app locally with auto-reload (port from ARC_EVAL_API_PORT, default 8000) |
 | `make lint` | check the lockfile, run Ruff format and check, run mypy strict |
 | `make test` | run the full test suite with coverage |
 | `make check` | run lint and the full test suite (the CI gate) |

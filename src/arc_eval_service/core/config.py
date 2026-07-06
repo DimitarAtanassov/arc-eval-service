@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     service_name: str = "arc-eval-service"
     log_level: str = "INFO"
 
+    # HTTP server bind address. Populated from ARC_EVAL_API_HOST / ARC_EVAL_API_PORT
+    # (injected from .env by docker compose and `make run`); drives both the
+    # container entrypoint and the local `python -m arc_eval_service.app` run.
+    api_host: str = "0.0.0.0"  # noqa: S104 - bind all interfaces for containerized serving
+    api_port: int = 8000
+
     # Async Postgres URL (required at runtime). Use the psycopg3 driver, e.g.
     #   postgresql+psycopg://user:pass@host:5432/arc_eval
     database_url: str | None = None

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import uvicorn
 from fastapi import FastAPI
 
 from arc_eval_service.api.dependencies import get_database
@@ -41,3 +42,15 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+def run() -> None:
+    """Serve the app on the configured host and port (container entrypoint)."""
+    settings = get_settings()
+    uvicorn.run(
+        "arc_eval_service.app:app", host=settings.api_host, port=settings.api_port
+    )
+
+
+if __name__ == "__main__":
+    run()
