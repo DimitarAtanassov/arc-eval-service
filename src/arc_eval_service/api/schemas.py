@@ -56,7 +56,7 @@ class EvaluateRequest(BaseModel):
         ),
     )
     metadata: EvaluationMetadata = Field(
-        ...,
+        default_factory=EvaluationMetadata,
         description="Caller correlation ids (inference id, model id). May be empty.",
     )
 

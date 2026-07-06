@@ -22,4 +22,10 @@ jobs:
         with:
           languages: python
           queries: security-and-quality
+          # Alembic version modules expose framework-required globals (revision,
+          # down_revision, branch_labels, depends_on) that py/unused-global-variable
+          # reports as unused. Exclude the version files; migrations/env.py stays in scope.
+          config: |
+            paths-ignore:
+              - migrations/versions
       - uses: github/codeql-action/analyze@v3

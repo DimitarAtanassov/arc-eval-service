@@ -3,7 +3,7 @@
 The evaluate contract no longer classifies interactions by task type; callers
 name the metrics to score explicitly. Drop the now-unused column.
 
-Revision ID: 0002_drop_task_type
+Revision ID: 0002
 Revises: 0001
 Create Date: 2026-07-05
 
@@ -17,7 +17,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "0002_drop_task_type"
+revision: str = "0002"
 down_revision: str | None = "0001"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

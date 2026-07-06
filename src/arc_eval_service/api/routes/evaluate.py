@@ -1,54 +1,25 @@
-"""Application configuration.
+"""The single evaluation route: score one completed interaction inline.
 
-All settings are overridable via ``ARC_EVAL_*`` environment variables. The
-instance is frozen and cached so it can be shared safely and used as an
-``lru_cache`` key elsewhere.
+Selecting the service is request wiring, not business logic. No orchestration or
+persistence lives here.
 """
 
 from __future__ import annotations
 
-from functools import lru_cache
+from typing import Annotated
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from fastapi import APIRouter, Depends
 
-from arc_eval_service.judging.profiles import ModelProfile
+from arc_eval_service.api.dependencies import get_evaluation_service
+from arc_eval_service.api.schemas import EvaluateRequest, EvaluateResponse
+from arc_eval_service.services.evaluation_service import EvaluationService
 
+router = APIRouter(tags=["evaluation"])
 
-class Settings(BaseSettings):
-    """Runtime settings for arc-eval-service."""
-
-    # protected_namespaces=() so model-related fields (model_profiles,
-    # default_model) don't collide with pydantic's reserved ``model_`` namespace.
-    model_config = SettingsConfigDict(
-        env_prefix="ARC_EVAL_", frozen=True, protected_namespaces=()
-    )
-
-    app_name: str = "arc-eval-service"
-    service_name: str = "arc-eval-service"
-    log_level: str = "INFO"
-
-    # Async Postgres URL (required at runtime). Use the psycopg3 driver, e.g.
-    #   postgresql+psycopg://user:pass@host:5432/arc_eval
-    database_url: str | None = None
-
-    # --- judge models (BYOK) ---------------------------------------------
-    # JSON list of server-side model profiles; the API key is referenced by env
-    # var name (api_key_env), never stored here. Example:
-    #   ARC_EVAL_MODEL_PROFILES='[{"name":"default","provider":"openai_compatible",
-    #     "model":"gpt-4o-mini","api_key_env":"OPENAI_API_KEY"}]'
-    model_profiles: list[ModelProfile] = Field(default_factory=list)
-    default_model: str | None = None  # profile name used when a judge omits one
-
-    # --- prompts / judging ------------------------------------------------
-    # Judge used when a request does not name one; must exist in the library.
-    default_judge: str = "default"
-    # Optional path to a prompts directory (with metrics/ and judges/
-    # subdirectories) overriding the bundled prompt library.
-    prompts_path: str | None = None
+ServiceDep = Annotated[EvaluationService, Depends(get_evaluation_service)]
 
 
-@lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    """Return a cached settings instance."""
-    return Settings()
+@router.post("/v1/evaluate", response_model=EvaluateResponse)
+async def evaluate(request: EvaluateRequest, service: ServiceDep) -> EvaluateResponse:
+    """Score one interaction across the requested metrics and return the results."""
+    return await service.evaluate(request)

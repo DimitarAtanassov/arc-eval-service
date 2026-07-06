@@ -36,7 +36,7 @@ logger = logging.getLogger("arc_eval_service.services.evaluation_service")
 
 
 class EvaluationService:
-    """Scores one interaction across its task's metrics and stores the outcome."""
+    """Scores one interaction across the requested metrics and stores the outcome."""
 
     def __init__(
         self,
