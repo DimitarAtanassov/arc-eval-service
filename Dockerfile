@@ -3,7 +3,7 @@
 #   docker build -t arc-eval-service:latest .
 
 # --- Builder: resolve dependencies into a self-contained venv.
-FROM python:3.13-slim AS builder
+FROM python:3.14-slim AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
@@ -22,7 +22,7 @@ COPY src ./src
 RUN uv sync --frozen --no-default-groups
 
 # --- Runtime: slim image with just the prebuilt venv + source. No git, no uv.
-FROM python:3.13-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
