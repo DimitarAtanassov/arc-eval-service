@@ -143,4 +143,7 @@ omit = ["*/__main__.py"]
 [tool.coverage.report]
 precision = 2
 show_missing = true
-fail_under = 80
+fail_under = 100
+exclude_also = [
+    "if __name__ == .__main__.:",
+]

@@ -54,3 +54,29 @@ async def test_lifespan_disposes_the_database(monkeypatch: pytest.MonkeyPatch) -
         assert disposed is True
     finally:
         _reset_caches()
+
+
+def test_run_serves_the_app_on_the_configured_host_and_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ARC_EVAL_DATABASE_URL", _FAKE_URL)
+    _reset_caches()
+    from arc_eval_service.app import run
+
+    captured: dict[str, object] = {}
+
+    def _fake_uvicorn_run(target: str, *, host: str, port: int) -> None:
+        captured.update(target=target, host=host, port=port)
+
+    monkeypatch.setattr("arc_eval_service.app.uvicorn.run", _fake_uvicorn_run)
+    settings = get_settings()
+    try:
+        run()
+    finally:
+        _reset_caches()
+
+    assert captured == {
+        "target": "arc_eval_service.app:app",
+        "host": settings.api_host,
+        "port": settings.api_port,
+    }

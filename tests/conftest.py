@@ -10,7 +10,12 @@ returned); ``stub_client`` overrides only the judge model so the happy path
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Iterator
+import shutil
+import socket
+import subprocess
+import tempfile
+from collections.abc import AsyncIterator, Callable, Iterator
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -61,21 +66,98 @@ class _StubModelRegistry(ModelRegistry):
         return _StubModel()
 
 
-@pytest.fixture(scope="session")
-def database_url() -> Iterator[str]:
-    """Start a Postgres container, create the schema, and expose its URL."""
+def _free_port() -> int:
+    """Reserve an ephemeral TCP port for the local Postgres cluster."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def _start_testcontainer() -> tuple[str, Callable[[], None]] | None:
+    """Start Postgres in a container, or return ``None`` when unavailable.
+
+    The canonical path (used in CI). Returns ``None`` when the library is missing,
+    the Docker daemon is down, or the image registry is blocked.
+    """
     try:
         from testcontainers.postgres import PostgresContainer
     except ImportError:
-        pytest.skip("testcontainers not installed")
-
+        return None
     try:
         container = PostgresContainer("postgres:16-alpine", driver="psycopg")
         container.start()
-    except Exception as exc:  # docker not running / image pull failed
-        pytest.skip(f"Postgres container unavailable: {exc}")
+    except Exception:  # any container failure (daemon down, registry blocked)
+        return None
+    return container.get_connection_url(), container.stop
 
-    url = container.get_connection_url()
+
+def _start_local_postgres() -> tuple[str, Callable[[], None]] | None:
+    """Start an ephemeral cluster with the on-PATH initdb/pg_ctl, or return None.
+
+    A dev fallback for machines where the container registry is blocked. It is real
+    Postgres (so ``JSONB`` columns behave as in production), initialised in a temp
+    directory on a random port and discarded at session end. Returns ``None`` when
+    the Postgres binaries are not installed.
+    """
+    initdb = shutil.which("initdb")
+    pg_ctl = shutil.which("pg_ctl")
+    if initdb is None or pg_ctl is None:
+        return None
+
+    root = Path(tempfile.mkdtemp(prefix="arc-eval-pg-"))
+    data_dir = root / "data"
+    port = _free_port()
+    try:
+        subprocess.run(  # noqa: S603 - fixed argv, executable resolved from PATH
+            [initdb, "-D", str(data_dir), "-U", "postgres", "--auth=trust", "-N"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(  # noqa: S603 - fixed argv, executable resolved from PATH
+            [
+                pg_ctl,
+                "-D",
+                str(data_dir),
+                "-w",
+                "-l",
+                str(root / "log"),
+                "-o",
+                f"-p {port} -k {root} -h 127.0.0.1",
+                "start",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        shutil.rmtree(root, ignore_errors=True)
+        return None
+
+    def _stop() -> None:
+        subprocess.run(  # noqa: S603 - fixed argv, executable resolved from PATH
+            [pg_ctl, "-D", str(data_dir), "-m", "immediate", "-w", "stop"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        shutil.rmtree(root, ignore_errors=True)
+
+    return f"postgresql+psycopg://postgres@127.0.0.1:{port}/postgres", _stop
+
+
+@pytest.fixture(scope="session")
+def database_url() -> Iterator[str]:
+    """Provide a Postgres URL with the schema created, for the whole session.
+
+    Prefers a testcontainer (CI); falls back to an ephemeral local cluster started
+    with the on-PATH ``initdb``/``pg_ctl`` when the container registry is blocked.
+    The DB-backed suite is skipped only when neither is available.
+    """
+    provider = _start_testcontainer() or _start_local_postgres()
+    if provider is None:
+        pytest.skip("no Postgres available (container registry blocked, no local initdb)")
+    url, stop = provider
     os.environ["ARC_EVAL_DATABASE_URL"] = url
 
     from arc_eval_service.db import models as _models  # noqa: F401 - register tables
@@ -89,7 +171,7 @@ def database_url() -> Iterator[str]:
         yield url
     finally:
         os.environ.pop("ARC_EVAL_DATABASE_URL", None)
-        container.stop()
+        stop()
 
 
 def _reset_caches() -> None:
