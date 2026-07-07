@@ -37,7 +37,9 @@ async def test_list_metrics_returns_the_catalog(stub_client: AsyncClient) -> Non
     }
 
 
-async def test_list_metrics_projects_definition_fields(stub_client: AsyncClient) -> None:
+async def test_list_metrics_projects_definition_fields(
+    stub_client: AsyncClient,
+) -> None:
     response = await stub_client.get("/v1/metrics")
 
     by_name = {m["name"]: m for m in response.json()}
@@ -133,9 +135,7 @@ async def test_list_results_filters_by_model_id(stub_client: AsyncClient) -> Non
     matched = (
         await stub_client.get("/v1/results", params={"model_id": "mdl-1"})
     ).json()
-    absent = (
-        await stub_client.get("/v1/results", params={"model_id": "other"})
-    ).json()
+    absent = (await stub_client.get("/v1/results", params={"model_id": "other"})).json()
 
     assert len(matched) == 2
     assert absent == []

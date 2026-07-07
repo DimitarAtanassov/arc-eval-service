@@ -53,7 +53,11 @@ class EvalRequestRepository(BaseRepository):
 
     async def list_recent(self, limit: int) -> list[StoredEvalRequest]:
         """Return the most recent eval requests, newest first (bounded page size)."""
-        stmt = select(EvalRequestRow).order_by(EvalRequestRow.created_at.desc()).limit(limit)
+        stmt = (
+            select(EvalRequestRow)
+            .order_by(EvalRequestRow.created_at.desc())
+            .limit(limit)
+        )
         async with self._read() as session:
             rows = (await session.scalars(stmt)).all()
         return [row_to_stored_request(row) for row in rows]

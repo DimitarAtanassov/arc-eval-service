@@ -31,11 +31,16 @@ LimitDep = Annotated[int, Query(ge=1, le=_MAX_LIMIT)]
 @router.get("/metrics", response_model=list[MetricSummary])
 async def list_metrics(service: ServiceDep) -> list[MetricSummary]:
     """List the metrics the service can score an interaction against."""
-    return [MetricSummary.from_definition(name, definition) for name, definition in service.metrics.items()]
+    return [
+        MetricSummary.from_definition(name, definition)
+        for name, definition in service.metrics.items()
+    ]
 
 
 @router.get("/requests", response_model=list[EvalRequestSummary])
-async def list_requests(service: ServiceDep, limit: LimitDep = _DEFAULT_LIMIT) -> list[EvalRequestSummary]:
+async def list_requests(
+    service: ServiceDep, limit: LimitDep = _DEFAULT_LIMIT
+) -> list[EvalRequestSummary]:
     """List recent interactions submitted for evaluation, newest first."""
     records = await service.list_requests(limit)
     return [EvalRequestSummary.from_record(record) for record in records]

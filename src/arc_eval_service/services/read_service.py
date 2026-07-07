@@ -64,4 +64,6 @@ class ReadService:
         metric_name: str | None = None,
         model_id: str | None = None,
     ) -> list[StoredEvaluationResult]:
-        return await self._results.list_recent(limit, metric_name=metric_name, model_id=model_id)
+        return await self._results.list_recent(
+            limit, metric_name=metric_name, model_id=model_id
+        )

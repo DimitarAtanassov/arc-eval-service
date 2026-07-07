@@ -156,7 +156,9 @@ def database_url() -> Iterator[str]:
     """
     provider = _start_testcontainer() or _start_local_postgres()
     if provider is None:
-        pytest.skip("no Postgres available (container registry blocked, no local initdb)")
+        pytest.skip(
+            "no Postgres available (container registry blocked, no local initdb)"
+        )
     url, stop = provider
     os.environ["ARC_EVAL_DATABASE_URL"] = url
 
