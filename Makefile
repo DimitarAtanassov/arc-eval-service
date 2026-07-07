@@ -88,7 +88,8 @@ downgrade: prepare
 
 .PHONY: run ## Run the main application locally with auto-reload
 run: prepare
-	$(load-dotenv); uv run uvicorn $(APP).app:app --reload --reload-dir src --host 0.0.0.0 --port 8001
+	$(load-dotenv); uv run uvicorn $(APP).app:app --reload --reload-dir src \
+		--host "$${ARC_EVAL_API_HOST:-0.0.0.0}" --port "$${ARC_EVAL_API_PORT:-8000}"
 
 .PHONY: clean ## Remove all temporary files
 clean:

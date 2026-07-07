@@ -1,4 +1,4 @@
-"""Unit tests for the evaluation service: mapping, task routing, and fail-open.
+"""Unit tests for the evaluation service: metric selection, mapping, and fail-open.
 
 The judge engine and repositories are replaced with in-memory doubles, so these
 tests exercise the service's own logic (which metrics run, how results are mapped,
@@ -127,15 +127,15 @@ def _service(
     )
 
 
-def _request(
-    task_type: str = "summarization", *, metrics: list[str] | None = None
-) -> EvaluateRequest:
+_DEFAULT_METRICS = ["faithfulness", "answer_relevance"]
+
+
+def _request(*, metrics: list[str] | None = None) -> EvaluateRequest:
     return EvaluateRequest(
-        task_type=task_type,
         input_text="the source article",
         output_text="the summary",
         prompt="Summarize:",
-        metrics=metrics,
+        metrics=metrics if metrics is not None else list(_DEFAULT_METRICS),
         metadata=EvaluationMetadata(inference_id="inf-1", model_id="mdl-1"),
     )
 
@@ -182,25 +182,14 @@ async def test_scored_metrics_are_returned_and_mapped() -> None:
     assert faith_row.prompt["variables"]["output"] == "the summary"
 
 
-async def test_unknown_task_type_uses_default_metrics() -> None:
-    engine = _FakeEngine(
-        {"answer_relevance": _ok("answer_relevance"), "safety": _ok("safety")}
-    )
-    service = _service(engine)
-
-    response = await service.evaluate(_request(task_type="question_answering"))
-
-    assert {r.metric_name for r in response.results} == {"answer_relevance", "safety"}
-
-
-async def test_explicit_metrics_override_task_policy() -> None:
+async def test_only_requested_metrics_are_scored() -> None:
     engine = _FakeEngine({"faithfulness": _ok("faithfulness")})
     requests, results = _SpyRequestRepo(), _SpyResultRepo()
     service = _service(engine, requests=requests, results=results)
 
     response = await service.evaluate(_request(metrics=["faithfulness"]))
 
-    # Only the requested metric is scored, not the summarization policy set.
+    # Only the metric the caller named is scored and persisted.
     assert {r.metric_name for r in response.results} == {"faithfulness"}
     assert {r.metric_name for r in results.created} == {"faithfulness"}
 

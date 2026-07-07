@@ -29,7 +29,6 @@ def build_case(request: EvaluateRequest, *, request_id: str) -> EvaluationCase:
         input=request.input_text,
         output=request.output_text,
         context=[request.input_text],
-        metadata={"task_type": request.task_type},
     )
 
 
@@ -56,7 +55,6 @@ def new_eval_request(request: EvaluateRequest, *, request_id: str) -> NewEvalReq
     metadata = request.metadata
     return NewEvalRequest(
         id=request_id,
-        task_type=request.task_type,
         input_text=request.input_text,
         output_text=request.output_text,
         prompt=request.prompt,

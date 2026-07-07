@@ -21,5 +21,5 @@ ServiceDep = Annotated[EvaluationService, Depends(get_evaluation_service)]
 
 @router.post("/v1/evaluate", response_model=EvaluateResponse)
 async def evaluate(request: EvaluateRequest, service: ServiceDep) -> EvaluateResponse:
-    """Score one interaction across its task's metrics and return the results."""
+    """Score one interaction across the requested metrics and return the results."""
     return await service.evaluate(request)

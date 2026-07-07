@@ -20,6 +20,7 @@ from arc_eval_service.db.repositories import (
 from arc_eval_service.judging.engine import JudgeEngine
 from arc_eval_service.judging.profiles import ModelRegistry
 from arc_eval_service.services.evaluation_service import EvaluationService
+from arc_eval_service.services.read_service import ReadService
 
 
 @lru_cache(maxsize=1)
@@ -61,4 +62,14 @@ def get_evaluation_service() -> EvaluationService:
         library=get_catalog(),
         requests=EvalRequestRepository(database.sessionmaker),
         results=EvaluationResultRepository(database.sessionmaker),
+    )
+
+
+def get_read_service() -> ReadService:
+    """Return a :class:`ReadService` for the browse endpoints (reads only)."""
+    database = get_database()
+    return ReadService(
+        requests=EvalRequestRepository(database.sessionmaker),
+        results=EvaluationResultRepository(database.sessionmaker),
+        catalog=get_catalog(),
     )

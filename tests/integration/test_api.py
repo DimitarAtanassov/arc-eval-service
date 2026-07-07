@@ -9,10 +9,10 @@ from sqlalchemy import create_engine, text
 pytestmark = pytest.mark.integration
 
 _VALID_BODY = {
-    "task_type": "summarization",
     "input_text": "Paris is the capital of France and its largest city.",
     "output_text": "Paris is France's capital.",
     "prompt": "Summarize the text.",
+    "metrics": ["faithfulness", "answer_relevance"],
     "metadata": {"inference_id": "inf-1", "model_id": "mdl-1"},
 }
 
@@ -34,7 +34,7 @@ async def test_evaluate_returns_scores(stub_client: AsyncClient) -> None:
 
 
 async def test_missing_required_field_is_422(client: AsyncClient) -> None:
-    body = {"task_type": "summarization", "input_text": "x"}  # no output_text
+    body = {k: v for k, v in _VALID_BODY.items() if k != "output_text"}
     response = await client.post("/v1/evaluate", json=body)
     assert response.status_code == 422
 
@@ -66,7 +66,7 @@ async def test_evaluate_persists_request_and_results(
     try:
         with engine.connect() as conn:
             requests = conn.execute(
-                text("SELECT inference_id, task_type FROM eval_requests")
+                text("SELECT inference_id FROM eval_requests")
             ).all()
             results = conn.execute(
                 text("SELECT metric_name, error, inference_id FROM evaluation_results")
@@ -74,9 +74,7 @@ async def test_evaluate_persists_request_and_results(
     finally:
         engine.dispose()
 
-    assert [(r.inference_id, r.task_type) for r in requests] == [
-        ("inf-1", "summarization")
-    ]
+    assert [r.inference_id for r in requests] == ["inf-1"]
     assert {r.metric_name for r in results} == {"faithfulness", "answer_relevance"}
     assert all(r.error is None for r in results)
     assert all(r.inference_id == "inf-1" for r in results)

@@ -28,7 +28,6 @@ async def database(clean_db: str) -> AsyncIterator[Database]:
 def _new_request(request_id: str = "req-1") -> NewEvalRequest:
     return NewEvalRequest(
         id=request_id,
-        task_type="summarization",
         input_text="source",
         output_text="summary",
         prompt="Summarize:",

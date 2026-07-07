@@ -41,4 +41,6 @@ COPY migrations ./migrations
 
 EXPOSE 8000
 
-CMD ["uvicorn", "arc_eval_service.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Bind host/port come from ARC_EVAL_API_HOST / ARC_EVAL_API_PORT (config.py), so a
+# bare `docker run` honors the same .env values the compose stack publishes.
+CMD ["python", "-m", "arc_eval_service.app"]

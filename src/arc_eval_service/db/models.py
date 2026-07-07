@@ -1,8 +1,8 @@
 """ORM models: the two tables this service owns.
 
-``eval_requests`` holds one interaction submitted for evaluation (the task type,
-the input and output text, the rendered prompt, and the caller's correlation ids
-from ``metadata``). ``evaluation_results`` holds one metric score per row against
+``eval_requests`` holds one interaction submitted for evaluation (the input and
+the output text, the rendered prompt, and the caller's correlation ids from
+``metadata``). ``evaluation_results`` holds one metric score per row against
 that interaction (score, pass/fail, the judge's reasoning, and which evaluator
 and judge model produced it).
 
@@ -38,7 +38,6 @@ class EvalRequestRow(Base):
     __tablename__ = "eval_requests"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    task_type: Mapped[str] = mapped_column(String, nullable=False)
     input_text: Mapped[str] = mapped_column(Text, nullable=False)
     output_text: Mapped[str] = mapped_column(Text, nullable=False)
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)

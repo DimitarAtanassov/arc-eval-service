@@ -44,3 +44,9 @@ class BaseRepository:
         else:
             async with self.begin() as owned:
                 yield owned
+
+    @asynccontextmanager
+    async def _read(self) -> AsyncIterator[AsyncSession]:
+        """Open a short-lived read-only session (no surrounding transaction)."""
+        async with self._sessionmaker() as session:
+            yield session

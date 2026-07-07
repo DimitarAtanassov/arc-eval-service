@@ -29,34 +29,36 @@ class EvaluationMetadata(BaseModel):
 
 
 class EvaluateRequest(BaseModel):
-    """A completed interaction to score."""
+    """A completed interaction to score.
 
-    task_type: str = Field(
-        ...,
-        min_length=1,
-        description=(
-            "Interaction type, e.g. 'summarization'. An unrecognized task type "
-            "falls back to a default metric set rather than being rejected."
-        ),
-    )
+    The caller names the metrics to score explicitly; the service does not infer
+    them from any task classification. Every field is required so a caller cannot
+    submit a half-specified interaction and have the service guess the rest.
+    """
+
     input_text: str = Field(
         ..., min_length=1, description="The original input (source text / question)."
     )
     output_text: str = Field(
         ..., min_length=1, description="The model output to evaluate."
     )
-    prompt: str | None = Field(
-        default=None, description="The rendered prompt, stored for audit."
+    prompt: str = Field(
+        ...,
+        min_length=1,
+        description="The rendered prompt that produced the output, stored for audit.",
     )
-    metrics: list[str] | None = Field(
-        default=None,
+    metrics: list[str] = Field(
+        ...,
+        min_length=1,
         description=(
-            "Explicit metrics to score. When omitted or given as an empty list, "
-            "the metrics are chosen by task_type. An unknown metric name is "
+            "Metrics to score the interaction against. An unknown metric name is "
             "rejected with 404."
         ),
     )
-    metadata: EvaluationMetadata = Field(default_factory=EvaluationMetadata)
+    metadata: EvaluationMetadata = Field(
+        default_factory=EvaluationMetadata,
+        description="Caller correlation ids (inference id, model id). May be empty.",
+    )
 
 
 class MetricResult(BaseModel):

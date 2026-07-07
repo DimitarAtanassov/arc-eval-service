@@ -26,7 +26,6 @@ class EvaluationCase(BaseModel):
         default=None, description="Retrieved context passages for grounded metrics."
     )
     reference: str | None = Field(default=None, description="Expected/reference text.")
-    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class MetricScore(BaseModel):

@@ -9,15 +9,15 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_USER: arc
-      POSTGRES_PASSWORD: arc
-      POSTGRES_DB: arc_eval
+      POSTGRES_USER: ${POSTGRES_USER:-arc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arc}
+      POSTGRES_DB: ${POSTGRES_DB:-arc_eval}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - arc-eval-db:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U arc -d arc_eval"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arc} -d ${POSTGRES_DB:-arc_eval}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -27,10 +27,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # Model profiles, the provider API key, and the other ARC_EVAL_* settings
-    # come from `.env` (copied from .env.example). It is optional, so the stack
-    # still starts without it; with no judge model configured, /v1/evaluate
-    # returns no scores (metrics error).
+    # Model profiles, the provider API key, the API host/port, and the other
+    # ARC_EVAL_* settings come from `.env` (copied from .env.example). It is
+    # optional, so the stack still starts without it; with no judge model
+    # configured, /v1/evaluate returns no scores (metrics error).
     env_file:
       - path: .env
         required: false
@@ -38,13 +38,16 @@ services:
       # Fixed to the compose network host: inside the stack the database is
       # reached at `db`, not localhost. This overrides any ARC_EVAL_DATABASE_URL
       # supplied by .env (which targets localhost for `make run`).
-      ARC_EVAL_DATABASE_URL: postgresql+psycopg://arc:arc@db:5432/arc_eval
+      ARC_EVAL_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-arc}:${POSTGRES_PASSWORD:-arc}@db:5432/${POSTGRES_DB:-arc_eval}
+    # The app binds ARC_EVAL_API_HOST/ARC_EVAL_API_PORT (config.py) after
+    # migrating, so a single .env drives the in-container bind and the published
+    # port below.
     ports:
-      - "8000:8000"
+      - "${ARC_EVAL_API_PORT:-8000}:${ARC_EVAL_API_PORT:-8000}"
     command:
       - sh
       - -c
-      - alembic upgrade head && uvicorn arc_eval_service.app:app --host 0.0.0.0 --port 8000
+      - alembic upgrade head && python -m arc_eval_service.app
 
 volumes:
   arc-eval-db:
