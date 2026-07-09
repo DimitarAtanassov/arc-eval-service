@@ -26,7 +26,6 @@ from sqlalchemy import create_engine, text
 from arc_eval_service.clients.lab_inference_client import (
     InferenceResult,
     InferenceRunRequest,
-    LabInferenceClient,
 )
 from arc_eval_service.judging.ports import JudgeModel, ModelCompletion, ModelSettings
 from arc_eval_service.judging.profiles import ModelProfile, ModelRegistry
@@ -260,7 +259,7 @@ async def stub_client(clean_db: str) -> AsyncIterator[AsyncClient]:
         yield async_client
 
 
-class _FakeLabClient(LabInferenceClient):
+class _FakeLabClient:
     """A lab inference client returning a canned inference, or raising a set error.
 
     Lets the experiment API tests exercise the real scoring and persistence path

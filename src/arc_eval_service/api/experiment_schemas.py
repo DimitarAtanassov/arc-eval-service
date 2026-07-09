@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from arc_eval_service.api.schemas import EvaluateResponse
 from arc_eval_service.clients.lab_inference_client import InferenceResult
@@ -38,6 +38,21 @@ class ExperimentCreateRequest(BaseModel):
     generation_config: GenerationConfigSchema = Field(
         default_factory=GenerationConfigSchema
     )
+    prompt_template: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Prompt template that frames the run's input; omit to send input as-is.",
+    )
+    variables: dict[str, str] = Field(
+        default_factory=dict,
+        description="Values filling the template's placeholders, fixed for the experiment.",
+    )
+
+    @model_validator(mode="after")
+    def _variables_require_a_template(self) -> ExperimentCreateRequest:
+        if self.variables and self.prompt_template is None:
+            raise ValueError("variables require a prompt_template")
+        return self
 
 
 class ExperimentResponse(BaseModel):
@@ -48,6 +63,8 @@ class ExperimentResponse(BaseModel):
     description: str | None
     model_name: str
     generation_config: GenerationConfigSchema
+    prompt_template: str | None
+    variables: dict[str, str]
     created_at: datetime
 
     @classmethod
@@ -60,6 +77,8 @@ class ExperimentResponse(BaseModel):
             generation_config=GenerationConfigSchema.model_validate(
                 record.generation_config
             ),
+            prompt_template=record.prompt_template,
+            variables=record.variables,
             created_at=record.created_at,
         )
 

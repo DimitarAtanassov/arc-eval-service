@@ -33,12 +33,20 @@ async def database(clean_db: str) -> AsyncIterator[Database]:
     await db.dispose()
 
 
-def _experiment(exp_id: str = "exp-1", name: str = "baseline") -> NewExperiment:
+def _experiment(
+    exp_id: str = "exp-1",
+    name: str = "baseline",
+    *,
+    prompt_template: str | None = None,
+    variables: dict[str, str] | None = None,
+) -> NewExperiment:
     return NewExperiment(
         id=exp_id,
         name=name,
         model_name="candidate",
         generation_config={"temperature": 0.0, "max_output_tokens": 64},
+        prompt_template=prompt_template,
+        variables=variables or {},
         description="first run",
         created_at=datetime.now(UTC),
     )
@@ -103,6 +111,22 @@ async def test_create_get_and_list(database: Database) -> None:
     assert await experiments.get("missing") is None
     assert await experiments.get_by_name("missing") is None
     assert [e.id for e in await experiments.list_recent(10)] == ["exp-1"]
+
+
+async def test_create_persists_prompt_template_and_variables(
+    database: Database,
+) -> None:
+    experiments = ExperimentRepository(database.sessionmaker)
+    await experiments.create(
+        _experiment(
+            prompt_template="translate", variables={"target_language": "French"}
+        )
+    )
+
+    fetched = await experiments.get("exp-1")
+    assert fetched is not None
+    assert fetched.prompt_template == "translate"
+    assert fetched.variables == {"target_language": "French"}
 
 
 async def test_duplicate_name_raises_conflict(database: Database) -> None:

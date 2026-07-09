@@ -1,3 +1,11 @@
+"""Dependency injection wiring (composition root).
+
+Routes depend on these factories rather than constructing the database, engine or
+services directly, keeping every collaborator swappable in tests (via FastAPI
+``dependency_overrides``). The database is a process-wide singleton because it owns
+the connection pool; everything else is a cheap per-request wrapper over it.
+"""
+
 from __future__ import annotations
 
 from functools import lru_cache

@@ -43,11 +43,14 @@ class EvaluationService:
         self._requests = requests
         self._results = results
 
-    async def score(self, request: EvaluateRequest) -> ScoredEvaluation:
+    async def score(
+        self, request: EvaluateRequest, *, correlation_id: str | None = None
+    ) -> ScoredEvaluation:
         """Score the interaction, persist it, and return the request id alongside the response.
 
         Callers that need the eval_request_id (for example, experiment runs that must
-        record the association) use this method. The public POST /v1/evaluate route
+        record the association) use this method and pass a correlation_id so the
+        scoring logs join the run's other hops. The public POST /v1/evaluate route
         delegates to evaluate(), which discards the id.
         """
         metric_names = self._select_metrics(request)
@@ -61,7 +64,9 @@ class EvaluationService:
             )
         )
 
-        await self._persist(request_id, request, case, scored)
+        await self._persist(
+            request_id, request, case, scored, correlation_id=correlation_id
+        )
         response = EvaluateResponse(
             results=[
                 mapping.to_metric_result(score, library=self._library)
@@ -98,6 +103,8 @@ class EvaluationService:
         request: EvaluateRequest,
         case: EvaluationCase,
         scored: list[MetricScore],
+        *,
+        correlation_id: str | None = None,
     ) -> None:
         """Store the interaction and every result. Best-effort: log and swallow."""
         new_request = mapping.new_eval_request(request, request_id=request_id)
@@ -115,5 +122,5 @@ class EvaluationService:
         except Exception:
             logger.exception(
                 "failed to persist evaluation",
-                extra={"eval_request_id": request_id},
+                extra={"eval_request_id": request_id, "correlation_id": correlation_id},
             )

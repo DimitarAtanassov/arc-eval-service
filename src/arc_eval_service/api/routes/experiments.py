@@ -45,6 +45,8 @@ async def create_experiment(
         model_name=payload.model_name,
         generation_config=payload.generation_config.to_domain(),
         description=payload.description,
+        prompt_template=payload.prompt_template,
+        variables=payload.variables,
     )
     return ExperimentResponse.from_record(record)
 

@@ -9,7 +9,6 @@ from arc_eval_service.api.schemas import EvaluateRequest, EvaluateResponse
 from arc_eval_service.clients.lab_inference_client import (
     InferenceResult,
     InferenceRunRequest,
-    LabInferenceClient,
 )
 from arc_eval_service.db.records import (
     NewExperiment,
@@ -17,20 +16,23 @@ from arc_eval_service.db.records import (
     StoredExperiment,
     StoredExperimentRun,
 )
-from arc_eval_service.db.repositories.experiments import (
-    ExperimentRepository,
-    ExperimentRunRepository,
+from arc_eval_service.domain.errors import (
+    ExperimentNotFoundError,
+    LabNotConfiguredError,
+    ModelNotFoundError,
 )
-from arc_eval_service.domain.errors import ExperimentNotFoundError, ModelNotFoundError
 from arc_eval_service.domain.experiment import (
     ExperimentMetricAggregate,
     GenerationConfig,
 )
-from arc_eval_service.services.evaluation_service import (
-    EvaluationService,
-    ScoredEvaluation,
+from arc_eval_service.services.evaluation_service import ScoredEvaluation
+from arc_eval_service.services.experiment_service import (
+    ExperimentService,
+    ExperimentStore,
+    InferenceRunner,
+    RunStore,
+    Scorer,
 )
-from arc_eval_service.services.experiment_service import ExperimentService
 
 pytestmark = pytest.mark.unit
 
@@ -38,13 +40,19 @@ _CONFIG = {"temperature": 0.0, "max_output_tokens": 64}
 
 
 def _stored_experiment(
-    exp_id: str = "exp-1", name: str = "baseline"
+    exp_id: str = "exp-1",
+    name: str = "baseline",
+    *,
+    prompt_template: str | None = None,
+    variables: dict[str, str] | None = None,
 ) -> StoredExperiment:
     return StoredExperiment(
         id=exp_id,
         name=name,
         model_name="candidate",
         generation_config=_CONFIG,
+        prompt_template=prompt_template,
+        variables=variables or {},
         description=None,
         created_at=datetime.now(UTC),
     )
@@ -64,7 +72,7 @@ def _inference() -> InferenceResult:
     )
 
 
-class _FakeExperiments(ExperimentRepository):
+class _FakeExperiments:
     def __init__(
         self,
         stored: StoredExperiment | None = None,
@@ -92,7 +100,7 @@ class _FakeExperiments(ExperimentRepository):
         return self.aggregates
 
 
-class _FakeRuns(ExperimentRunRepository):
+class _FakeRuns:
     def __init__(self) -> None:
         self.created: list[NewExperimentRun] = []
 
@@ -103,7 +111,7 @@ class _FakeRuns(ExperimentRunRepository):
         return StoredExperimentRun(**item.model_dump())
 
 
-class _FakeLab(LabInferenceClient):
+class _FakeLab:
     def __init__(
         self, result: InferenceResult | None = None, error: Exception | None = None
     ) -> None:
@@ -120,22 +128,24 @@ class _FakeLab(LabInferenceClient):
         return self.result
 
 
-class _FakeEval(EvaluationService):
+class _FakeEval:
     def __init__(self, response: EvaluateResponse | None = None) -> None:
         self.response = response or EvaluateResponse(results=[])
         self.calls: list[EvaluateRequest] = []
 
-    async def score(self, request: EvaluateRequest) -> ScoredEvaluation:
+    async def score(
+        self, request: EvaluateRequest, *, correlation_id: str | None = None
+    ) -> ScoredEvaluation:
         self.calls.append(request)
         return ScoredEvaluation(request_id="req-9", response=self.response)
 
 
 def _service(
     *,
-    experiments: ExperimentRepository | None = None,
-    runs: ExperimentRunRepository | None = None,
-    lab_client: LabInferenceClient | None = None,
-    evaluation: EvaluationService | None = None,
+    experiments: ExperimentStore | None = None,
+    runs: RunStore | None = None,
+    lab_client: InferenceRunner | None = None,
+    evaluation: Scorer | None = None,
     with_lab: bool = True,
 ) -> ExperimentService:
     return ExperimentService(
@@ -181,7 +191,7 @@ async def test_list_recent_returns_experiments() -> None:
 
 async def test_run_requires_a_lab_client() -> None:
     service = _service(with_lab=False)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(LabNotConfiguredError):
         await service.run("exp-1", "text", metrics=None)
 
 
@@ -257,3 +267,32 @@ async def test_compare_returns_both_experiments() -> None:
     compared = await service.compare("exp-1", "exp-1")
 
     assert len(compared) == 2
+
+
+async def test_create_stores_prompt_template_and_variables() -> None:
+    experiments = _FakeExperiments()
+    service = _service(experiments=experiments)
+
+    await service.create(
+        name="translate-fr",
+        model_name="candidate",
+        generation_config=GenerationConfig(temperature=0.0, max_output_tokens=64),
+        prompt_template="translate",
+        variables={"target_language": "French"},
+    )
+
+    assert experiments.created[0].prompt_template == "translate"
+    assert experiments.created[0].variables == {"target_language": "French"}
+
+
+async def test_run_forwards_prompt_template_and_variables_to_lab() -> None:
+    lab = _FakeLab()
+    stored = _stored_experiment(
+        prompt_template="translate", variables={"target_language": "French"}
+    )
+    service = _service(experiments=_FakeExperiments(stored), lab_client=lab)
+
+    await service.run("exp-1", "hola", metrics=None)
+
+    assert lab.calls[0].prompt_template == "translate"
+    assert lab.calls[0].variables == {"target_language": "French"}

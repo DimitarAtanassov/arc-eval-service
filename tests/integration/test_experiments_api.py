@@ -6,7 +6,12 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import create_engine, text
 
-from arc_eval_service.domain.errors import LabInferenceError, ModelNotFoundError
+from arc_eval_service.domain.errors import (
+    LabInferenceError,
+    LabNotConfiguredError,
+    LabRequestInvalidError,
+    ModelNotFoundError,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -38,6 +43,34 @@ async def test_create_and_get(experiment_env: _Env) -> None:
     assert body["name"] == "baseline"
     assert body["model_name"] == "candidate"
     assert body["generation_config"] == {"temperature": 0.0, "max_output_tokens": 64}
+    assert body["prompt_template"] is None
+    assert body["variables"] == {}
+
+
+async def test_create_with_prompt_template_echoes_it(experiment_env: _Env) -> None:
+    client, _ = experiment_env
+    response = await client.post(
+        "/v1/experiments",
+        json={
+            **_CREATE,
+            "name": "translate-fr",
+            "prompt_template": "translate",
+            "variables": {"target_language": "French"},
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["prompt_template"] == "translate"
+    assert body["variables"] == {"target_language": "French"}
+
+
+async def test_create_variables_without_a_template_is_422(experiment_env: _Env) -> None:
+    client, _ = experiment_env
+    response = await client.post(
+        "/v1/experiments",
+        json={**_CREATE, "name": "bad", "variables": {"x": "y"}},
+    )
+    assert response.status_code == 422
 
 
 async def test_create_duplicate_name_is_409(experiment_env: _Env) -> None:
@@ -120,6 +153,26 @@ async def test_run_lab_down_is_502(experiment_env: _Env) -> None:
         f"/v1/experiments/{exp_id}/run", json={"input_text": "text"}
     )
     assert response.status_code == 502
+
+
+async def test_run_invalid_lab_request_is_422(experiment_env: _Env) -> None:
+    client, fake_lab = experiment_env
+    fake_lab.error = LabRequestInvalidError("unknown template variable")
+    exp_id = await _create(client)
+    response = await client.post(
+        f"/v1/experiments/{exp_id}/run", json={"input_text": "text"}
+    )
+    assert response.status_code == 422
+
+
+async def test_run_lab_not_configured_is_503(experiment_env: _Env) -> None:
+    client, fake_lab = experiment_env
+    fake_lab.error = LabNotConfiguredError("lab not configured")
+    exp_id = await _create(client)
+    response = await client.post(
+        f"/v1/experiments/{exp_id}/run", json={"input_text": "text"}
+    )
+    assert response.status_code == 503
 
 
 async def test_run_unknown_model_is_404(experiment_env: _Env) -> None:

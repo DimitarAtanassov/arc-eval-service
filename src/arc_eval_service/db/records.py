@@ -86,6 +86,8 @@ class NewExperiment(BaseModel):
     name: str
     model_name: str
     generation_config: dict[str, Any]
+    prompt_template: str | None
+    variables: dict[str, str]
     description: str | None
     created_at: datetime
 
@@ -97,6 +99,8 @@ class StoredExperiment(BaseModel):
     name: str
     model_name: str
     generation_config: dict[str, Any]
+    prompt_template: str | None
+    variables: dict[str, str]
     description: str | None
     created_at: datetime
 

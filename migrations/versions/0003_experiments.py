@@ -29,6 +29,11 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Fail fast rather than queue behind a long-running query: adding the FK to
+    # eval_requests briefly locks that table, so cap the wait and let the runner
+    # retry on timeout instead of stalling traffic behind us.
+    op.execute("SET lock_timeout = '4s'")
+    op.execute("SET statement_timeout = '1min'")
     op.create_table(
         "experiments",
         sa.Column("id", sa.String(), nullable=False),
@@ -77,8 +82,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_experiment_runs_created_at", table_name="experiment_runs")
-    op.drop_index("ix_experiment_runs_experiment_id", table_name="experiment_runs")
+    op.execute("SET lock_timeout = '4s'")
+    op.execute("SET statement_timeout = '1min'")
+    # DROP TABLE removes each table's own indexes; drop children before parents.
     op.drop_table("experiment_runs")
-    op.drop_index("ix_experiments_created_at", table_name="experiments")
     op.drop_table("experiments")

@@ -14,6 +14,7 @@ from arc_eval_service.clients.lab_inference_client import (
 )
 from arc_eval_service.domain.errors import (
     LabInferenceError,
+    LabRequestInvalidError,
     ModelInactiveError,
     ModelNotFoundError,
 )
@@ -69,6 +70,8 @@ async def test_run_posts_contract_and_parses_response() -> None:
         "input_text": "source",
         "generation_config": {"temperature": 0.0, "max_output_tokens": 64},
         "allow_inactive": True,
+        "prompt_template": None,
+        "variables": {},
     }
     assert isinstance(result, InferenceResult)
     assert result.id == "inf-1"
@@ -79,6 +82,57 @@ async def test_not_found_maps_to_model_not_found() -> None:
     client = _client(lambda _: httpx.Response(404, json={"detail": "unknown model"}))
     with pytest.raises(ModelNotFoundError):
         await client.run(_request())
+
+
+async def test_unprocessable_maps_to_lab_request_invalid() -> None:
+    body = {"detail": "Missing variables for template 'translate': ['target_language']"}
+    client = _client(lambda _: httpx.Response(422, json=body))
+    with pytest.raises(LabRequestInvalidError, match="target_language"):
+        await client.run(_request())
+
+
+async def test_unprocessable_with_non_json_body_still_raises_invalid() -> None:
+    client = _client(lambda _: httpx.Response(422, content=b"not json"))
+    with pytest.raises(LabRequestInvalidError):
+        await client.run(_request())
+
+
+async def test_unprocessable_with_non_object_json_still_raises_invalid() -> None:
+    client = _client(lambda _: httpx.Response(422, json=["nope"]))
+    with pytest.raises(LabRequestInvalidError):
+        await client.run(_request())
+
+
+async def test_unprocessable_with_non_string_detail_still_raises_invalid() -> None:
+    client = _client(lambda _: httpx.Response(422, json={"detail": {"nested": "x"}}))
+    with pytest.raises(LabRequestInvalidError):
+        await client.run(_request())
+
+
+async def test_run_serializes_prompt_template_and_variables() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_RESPONSE)
+
+    request = InferenceRunRequest(
+        model_name="candidate",
+        input_text="source",
+        generation_config=GenerationConfig(temperature=0.0, max_output_tokens=64),
+        prompt_template="translate",
+        variables={"target_language": "French"},
+    )
+    await _client(handler).run(request)
+
+    assert seen["body"] == {
+        "model_name": "candidate",
+        "input_text": "source",
+        "generation_config": {"temperature": 0.0, "max_output_tokens": 64},
+        "allow_inactive": True,
+        "prompt_template": "translate",
+        "variables": {"target_language": "French"},
+    }
 
 
 async def test_conflict_maps_to_model_inactive() -> None:

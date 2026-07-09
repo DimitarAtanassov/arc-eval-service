@@ -23,8 +23,20 @@ _NAME_CONSTRAINT = "uq_experiments_name"
 
 
 def _violates_constraint(exc: IntegrityError, name: str) -> bool:
-    msg = str(exc.orig) if exc.orig is not None else str(exc)
-    return name in msg
+    """True when the IntegrityError is a violation of the named DB constraint.
+
+    Reads the structured constraint name the driver reports (psycopg exposes it as
+    ``orig.diag.constraint_name``, asyncpg as ``orig.constraint_name``) instead of
+    substring-matching the driver's message text, which is locale- and
+    format-dependent. Returns False when no constraint name is available, so an
+    unclassifiable error is re-raised rather than mislabeled a name conflict.
+    """
+    orig = exc.orig
+    diag = getattr(orig, "diag", None)
+    constraint: object = getattr(diag, "constraint_name", None) or getattr(
+        orig, "constraint_name", None
+    )
+    return constraint == name
 
 
 def new_experiment_to_row(item: NewExperiment) -> ExperimentRow:
@@ -34,6 +46,8 @@ def new_experiment_to_row(item: NewExperiment) -> ExperimentRow:
         name=item.name,
         model_name=item.model_name,
         generation_config=item.generation_config,
+        prompt_template=item.prompt_template,
+        variables=item.variables,
         description=item.description,
         created_at=item.created_at,
     )
@@ -46,6 +60,8 @@ def row_to_stored_experiment(row: ExperimentRow) -> StoredExperiment:
         name=row.name,
         model_name=row.model_name,
         generation_config=row.generation_config,
+        prompt_template=row.prompt_template,
+        variables=row.variables,
         description=row.description,
         created_at=row.created_at,
     )
@@ -77,14 +93,7 @@ class ExperimentRepository(BaseRepository):
                 if _violates_constraint(exc, _NAME_CONSTRAINT):
                     raise ExperimentNameConflictError(item.name) from exc
                 raise
-        return StoredExperiment(
-            id=item.id,
-            name=item.name,
-            model_name=item.model_name,
-            generation_config=item.generation_config,
-            description=item.description,
-            created_at=item.created_at,
-        )
+        return StoredExperiment(**item.model_dump())
 
     async def get(self, experiment_id: str) -> StoredExperiment | None:
         """Return one experiment by id, or None when absent."""
@@ -156,10 +165,4 @@ class ExperimentRunRepository(BaseRepository):
         """Persist one experiment run, joining a caller's transaction when provided."""
         async with self._write(session) as active:
             active.add(new_experiment_run_to_row(item))
-        return StoredExperimentRun(
-            id=item.id,
-            experiment_id=item.experiment_id,
-            inference_id=item.inference_id,
-            eval_request_id=item.eval_request_id,
-            created_at=item.created_at,
-        )
+        return StoredExperimentRun(**item.model_dump())

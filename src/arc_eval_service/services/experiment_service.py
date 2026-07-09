@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Protocol
 from uuid import uuid4
 
 from arc_eval_service.api.schemas import (
@@ -13,26 +14,58 @@ from arc_eval_service.api.schemas import (
 from arc_eval_service.clients.lab_inference_client import (
     InferenceResult,
     InferenceRunRequest,
-    LabInferenceClient,
 )
 from arc_eval_service.db.records import (
     NewExperiment,
     NewExperimentRun,
     StoredExperiment,
+    StoredExperimentRun,
 )
-from arc_eval_service.db.repositories.experiments import (
-    ExperimentRepository,
-    ExperimentRunRepository,
+from arc_eval_service.domain.errors import (
+    ExperimentNotFoundError,
+    LabNotConfiguredError,
 )
-from arc_eval_service.domain.errors import ExperimentNotFoundError
 from arc_eval_service.domain.experiment import (
     ExperimentMetricAggregate,
     ExperimentResults,
     GenerationConfig,
 )
-from arc_eval_service.services.evaluation_service import EvaluationService
+from arc_eval_service.services.evaluation_service import ScoredEvaluation
 
 logger = logging.getLogger("arc_eval_service.services.experiment_service")
+
+
+class InferenceRunner(Protocol):
+    """The inference seam the service depends on (LabInferenceClient satisfies it)."""
+
+    async def run(
+        self, request: InferenceRunRequest, *, correlation_id: str | None = None
+    ) -> InferenceResult: ...
+
+
+class Scorer(Protocol):
+    """The scoring seam the service depends on (EvaluationService satisfies it)."""
+
+    async def score(
+        self, request: EvaluateRequest, *, correlation_id: str | None = None
+    ) -> ScoredEvaluation: ...
+
+
+class ExperimentStore(Protocol):
+    """The experiment-persistence seam (ExperimentRepository satisfies it)."""
+
+    async def create(self, item: NewExperiment) -> StoredExperiment: ...
+    async def get(self, experiment_id: str) -> StoredExperiment | None: ...
+    async def list_recent(self, limit: int) -> list[StoredExperiment]: ...
+    async def aggregate_scores(
+        self, experiment_id: str
+    ) -> list[ExperimentMetricAggregate]: ...
+
+
+class RunStore(Protocol):
+    """The experiment-run-persistence seam (ExperimentRunRepository satisfies it)."""
+
+    async def create(self, item: NewExperimentRun) -> StoredExperimentRun: ...
 
 
 @dataclass(frozen=True)
@@ -50,10 +83,10 @@ class ExperimentService:
     def __init__(
         self,
         *,
-        experiments: ExperimentRepository,
-        runs: ExperimentRunRepository,
-        lab_client: LabInferenceClient | None,
-        evaluation: EvaluationService,
+        experiments: ExperimentStore,
+        runs: RunStore,
+        lab_client: InferenceRunner | None,
+        evaluation: Scorer,
     ) -> None:
         self._experiments = experiments
         self._runs = runs
@@ -67,6 +100,8 @@ class ExperimentService:
         model_name: str,
         generation_config: GenerationConfig,
         description: str | None = None,
+        prompt_template: str | None = None,
+        variables: dict[str, str] | None = None,
     ) -> StoredExperiment:
         """Create an experiment. Raises ExperimentNameConflictError on a duplicate name."""
         new_exp = NewExperiment(
@@ -74,6 +109,8 @@ class ExperimentService:
             name=name,
             model_name=model_name,
             generation_config=generation_config.model_dump(mode="json"),
+            prompt_template=prompt_template,
+            variables=variables or {},
             description=description,
             created_at=datetime.now(UTC),
         )
@@ -99,19 +136,16 @@ class ExperimentService:
     ) -> ExperimentRunResult:
         """Run one inference under the experiment's config, then optionally score it.
 
-        Raises ExperimentNotFoundError when the experiment does not exist.
-        Raises ModelNotFoundError/ModelInactiveError when the lab rejects the model.
-        Raises LabInferenceError for any other lab failure.
+        Raises ExperimentNotFoundError when the experiment does not exist,
+        LabNotConfiguredError (503) when no lab is wired, ModelNotFoundError /
+        ModelInactiveError when the lab rejects the model, and LabInferenceError for
+        any other lab failure.
         """
+        experiment = await self.get(experiment_id)
         if self._lab is None:
-            msg = (
+            raise LabNotConfiguredError(
                 "lab inference client is not configured (ARC_LAB_SERVICE_URL is unset)"
             )
-            raise RuntimeError(msg)
-
-        experiment = await self._experiments.get(experiment_id)
-        if experiment is None:
-            raise ExperimentNotFoundError(experiment_id)
 
         correlation_id = str(uuid4())
         generation_config = GenerationConfig.model_validate(
@@ -123,6 +157,8 @@ class ExperimentService:
                 input_text=input_text,
                 generation_config=generation_config,
                 allow_inactive=True,
+                prompt_template=experiment.prompt_template,
+                variables=experiment.variables,
             ),
             correlation_id=correlation_id,
         )
@@ -140,10 +176,17 @@ class ExperimentService:
                     model_id=inf.model_id,
                 ),
             )
-            scored = await self._evaluation.score(eval_req)
+            scored = await self._evaluation.score(
+                eval_req, correlation_id=correlation_id
+            )
             eval_request_id = scored.request_id
             evaluation = scored.response
 
+        # The link row is written last, in its own transaction, on purpose: the
+        # inference and its scores have already committed, so if the process dies
+        # here only the (inert) link is lost. A run with no link is simply not
+        # counted by aggregate_scores, never double-counted, so losing it cannot
+        # corrupt an experiment's results.
         new_run = NewExperimentRun(
             id=str(uuid4()),
             experiment_id=experiment_id,
@@ -158,6 +201,7 @@ class ExperimentService:
             extra={
                 "experiment_id": experiment_id,
                 "inference_id": inf.id,
+                "eval_request_id": eval_request_id,
                 "model_name": experiment.model_name,
                 "latency_ms": inf.latency_ms,
                 "metric_count": len(metrics) if metrics else 0,
@@ -173,9 +217,7 @@ class ExperimentService:
     async def results(self, experiment_id: str) -> ExperimentResults:
         """Return aggregated metric scores for one experiment."""
         await self.get(experiment_id)
-        aggregates: list[
-            ExperimentMetricAggregate
-        ] = await self._experiments.aggregate_scores(experiment_id)
+        aggregates = await self._experiments.aggregate_scores(experiment_id)
         return ExperimentResults(experiment_id=experiment_id, metrics=aggregates)
 
     async def compare(

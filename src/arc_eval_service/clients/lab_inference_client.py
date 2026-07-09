@@ -5,11 +5,12 @@ from datetime import datetime
 from uuid import uuid4
 
 import httpx
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from arc_eval_service.domain.errors import (
     LabInferenceError,
+    LabRequestInvalidError,
     ModelInactiveError,
     ModelNotFoundError,
 )
@@ -48,6 +49,8 @@ class InferenceRunRequest(BaseModel):
     input_text: str
     generation_config: GenerationConfig
     allow_inactive: bool = True
+    prompt_template: str | None = None
+    variables: dict[str, str] = Field(default_factory=dict)
 
 
 class InferenceResult(BaseModel):
@@ -80,9 +83,10 @@ class LabInferenceClient:
     ) -> InferenceResult:
         """Run one inference via the lab.
 
-        Raises ModelNotFoundError on 404 (unknown model), ModelInactiveError on 409
-        (model deactivated), and LabInferenceError for every other failure so the
-        experiment service has typed signals to surface upward.
+        Raises ModelNotFoundError on 404 (unknown model or prompt template),
+        ModelInactiveError on 409 (model deactivated), LabRequestInvalidError on 422
+        (bad template variables or config, a caller error), and LabInferenceError for
+        every other failure so the experiment service has typed signals to surface.
         """
         cid = correlation_id or str(uuid4())
         logger.info(
@@ -108,6 +112,10 @@ class LabInferenceClient:
             raise ModelNotFoundError(request.model_name)
         if response.status_code == httpx.codes.CONFLICT:
             raise ModelInactiveError(request.model_name)
+        if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+            raise LabRequestInvalidError(
+                _detail(response) or "lab rejected the request as invalid"
+            )
 
         try:
             response.raise_for_status()
@@ -139,3 +147,20 @@ def build_lab_inference_client(
         timeout=httpx.Timeout(settings.timeout_seconds),
     )
     return LabInferenceClient(http_client)
+
+
+def _detail(response: httpx.Response) -> str | None:
+    """Best-effort detail string from a lab error body.
+
+    Safe to surface to our caller: it describes the caller's own request (a bad
+    template variable, an invalid config), not lab internals.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        if isinstance(detail, str):
+            return detail
+    return None
