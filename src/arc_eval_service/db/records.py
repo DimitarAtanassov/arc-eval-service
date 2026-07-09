@@ -77,3 +77,45 @@ class StoredEvaluationResult(BaseModel):
     latency_ms: float
     error: str | None
     created_at: datetime
+
+
+class NewExperiment(BaseModel):
+    """An experiment to persist before first use."""
+
+    id: str
+    name: str
+    model_name: str
+    generation_config: dict[str, Any]
+    description: str | None
+    created_at: datetime
+
+
+class StoredExperiment(BaseModel):
+    """A persisted experiment read back from storage."""
+
+    id: str
+    name: str
+    model_name: str
+    generation_config: dict[str, Any]
+    description: str | None
+    created_at: datetime
+
+
+class NewExperimentRun(BaseModel):
+    """An experiment run to persist after inference (and optional evaluation)."""
+
+    id: str
+    experiment_id: str
+    inference_id: str
+    eval_request_id: str | None
+    created_at: datetime
+
+
+class StoredExperimentRun(BaseModel):
+    """A persisted experiment run read back from storage."""
+
+    id: str
+    experiment_id: str
+    inference_id: str
+    eval_request_id: str | None
+    created_at: datetime

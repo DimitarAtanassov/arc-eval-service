@@ -56,3 +56,32 @@ class ModelError(Exception):
     Captured per-metric and surfaced as an errored result; never fails the whole
     evaluation request.
     """
+
+
+class ExperimentNotFoundError(Exception):
+    def __init__(self, experiment_id: str) -> None:
+        self.experiment_id = experiment_id
+        super().__init__(f"experiment not found: {experiment_id}")
+
+
+class ExperimentNameConflictError(Exception):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"experiment name already exists: {name}")
+
+
+class ModelNotFoundError(Exception):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"model not found: {name}")
+
+
+class ModelInactiveError(Exception):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"model is not active: {name}")
+
+
+class LabInferenceError(Exception):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)

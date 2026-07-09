@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+import json
+
+import httpx
+import pytest
+
+from arc_eval_service.clients.lab_inference_client import (
+    InferenceResult,
+    InferenceRunRequest,
+    LabInferenceClient,
+    LabInferenceSettings,
+    build_lab_inference_client,
+)
+from arc_eval_service.domain.errors import (
+    LabInferenceError,
+    ModelInactiveError,
+    ModelNotFoundError,
+)
+from arc_eval_service.domain.experiment import GenerationConfig
+
+pytestmark = pytest.mark.contract
+
+_RESPONSE = {
+    "id": "inf-1",
+    "model_id": "mdl-1",
+    "input_text": "source",
+    "prompt": "Summarize:",
+    "output_text": "summary",
+    "latency_ms": 12,
+    "prompt_tokens": 5,
+    "completion_tokens": 3,
+    "created_at": "2026-07-08T00:00:00Z",
+}
+
+
+def _request() -> InferenceRunRequest:
+    return InferenceRunRequest(
+        model_name="candidate",
+        input_text="source",
+        generation_config=GenerationConfig(temperature=0.0, max_output_tokens=64),
+    )
+
+
+def _client(handler: httpx.MockTransport | object) -> LabInferenceClient:
+    transport = httpx.MockTransport(handler)  # type: ignore[arg-type]
+    return LabInferenceClient(
+        httpx.AsyncClient(base_url="http://lab", transport=transport)
+    )
+
+
+async def test_run_posts_contract_and_parses_response() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["cid"] = request.headers.get("X-Correlation-ID")
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_RESPONSE)
+
+    client = _client(handler)
+    result = await client.run(_request(), correlation_id="cid-1")
+    await client.aclose()
+
+    assert seen["url"] == "http://lab/v1/inference:run"
+    assert seen["cid"] == "cid-1"
+    assert seen["body"] == {
+        "model_name": "candidate",
+        "input_text": "source",
+        "generation_config": {"temperature": 0.0, "max_output_tokens": 64},
+        "allow_inactive": True,
+    }
+    assert isinstance(result, InferenceResult)
+    assert result.id == "inf-1"
+    assert result.output_text == "summary"
+
+
+async def test_not_found_maps_to_model_not_found() -> None:
+    client = _client(lambda _: httpx.Response(404, json={"detail": "unknown model"}))
+    with pytest.raises(ModelNotFoundError):
+        await client.run(_request())
+
+
+async def test_conflict_maps_to_model_inactive() -> None:
+    client = _client(lambda _: httpx.Response(409, json={"detail": "inactive"}))
+    with pytest.raises(ModelInactiveError):
+        await client.run(_request())
+
+
+async def test_server_error_maps_to_lab_inference_error() -> None:
+    client = _client(lambda _: httpx.Response(500, text="boom"))
+    with pytest.raises(LabInferenceError):
+        await client.run(_request())
+
+
+async def test_connect_error_maps_to_lab_inference_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route", request=request)
+
+    client = _client(handler)
+    with pytest.raises(LabInferenceError):
+        await client.run(_request())
+
+
+async def test_transport_error_maps_to_lab_inference_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    client = _client(handler)
+    with pytest.raises(LabInferenceError):
+        await client.run(_request())
+
+
+async def test_non_json_maps_to_lab_inference_error() -> None:
+    client = _client(lambda _: httpx.Response(200, content=b"not json"))
+    with pytest.raises(LabInferenceError):
+        await client.run(_request())
+
+
+async def test_bad_schema_maps_to_lab_inference_error() -> None:
+    client = _client(lambda _: httpx.Response(200, json={"id": "x"}))
+    with pytest.raises(LabInferenceError):
+        await client.run(_request())
+
+
+def test_build_returns_none_without_url() -> None:
+    assert build_lab_inference_client(LabInferenceSettings(service_url="")) is None
+
+
+def test_build_returns_client_with_url() -> None:
+    client = build_lab_inference_client(LabInferenceSettings(service_url="http://lab"))
+    assert isinstance(client, LabInferenceClient)

@@ -1,11 +1,3 @@
-"""Maps domain errors to HTTP responses with safe, client-facing messages.
-
-The judge engine captures per-metric scoring failures itself and degrades them to
-errored results. These handlers cover the request-level validation errors that
-must instead reach the client: an explicitly requested metric the catalog does
-not define.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -14,7 +6,14 @@ from uuid import uuid4
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 
-from arc_eval_service.domain.errors import UnknownMetricError
+from arc_eval_service.domain.errors import (
+    ExperimentNameConflictError,
+    ExperimentNotFoundError,
+    LabInferenceError,
+    ModelInactiveError,
+    ModelNotFoundError,
+    UnknownMetricError,
+)
 
 logger = logging.getLogger("arc_eval_service.api.errors")
 
@@ -23,6 +22,27 @@ async def _unknown_metric(request: Request, exc: Exception) -> Response:
     return JSONResponse(
         status_code=status.HTTP_404_NOT_FOUND,
         content={"detail": str(exc) or "unknown metric"},
+    )
+
+
+async def _not_found(request: Request, exc: Exception) -> Response:
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={"detail": str(exc)},
+    )
+
+
+async def _conflict(request: Request, exc: Exception) -> Response:
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": str(exc)},
+    )
+
+
+async def _bad_gateway(request: Request, exc: Exception) -> Response:
+    return JSONResponse(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        content={"detail": str(exc) or "upstream lab request failed"},
     )
 
 
@@ -49,4 +69,9 @@ async def _unhandled(request: Request, exc: Exception) -> Response:
 
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(UnknownMetricError, _unknown_metric)
+    app.add_exception_handler(ExperimentNotFoundError, _not_found)
+    app.add_exception_handler(ModelNotFoundError, _not_found)
+    app.add_exception_handler(ExperimentNameConflictError, _conflict)
+    app.add_exception_handler(ModelInactiveError, _conflict)
+    app.add_exception_handler(LabInferenceError, _bad_gateway)
     app.add_exception_handler(Exception, _unhandled)

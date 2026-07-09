@@ -1,24 +1,8 @@
-"""Evaluation orchestration: score one interaction and persist the outcome.
-
-The service is the whole job of ``POST /v1/evaluate``:
-
-1. validate the caller's explicit ``metrics`` against the catalog (an unknown
-   name is a 404);
-2. score them concurrently via the judge engine (best-effort per metric);
-3. persist the interaction and every result, including failures, via the
-   :mod:`services.mapping` record builders;
-4. return only the metrics that scored successfully.
-
-Scoring never raises: the judge engine degrades a failed metric to an errored
-score, so one bad metric (or a missing judge model) cannot fail the request.
-Persistence is best-effort too: a failed observability write is logged, not
-surfaced, so the caller still gets its scores.
-"""
-
 from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from uuid import uuid4
 
 from arc_eval_service.api.schemas import EvaluateRequest, EvaluateResponse
@@ -33,6 +17,14 @@ from arc_eval_service.judging.engine import JudgeEngine
 from arc_eval_service.services import mapping
 
 logger = logging.getLogger("arc_eval_service.services.evaluation_service")
+
+
+@dataclass(frozen=True)
+class ScoredEvaluation:
+    """The result of an in-process evaluation: the persisted request id and the response."""
+
+    request_id: str
+    response: EvaluateResponse
 
 
 class EvaluationService:
@@ -51,8 +43,13 @@ class EvaluationService:
         self._requests = requests
         self._results = results
 
-    async def evaluate(self, request: EvaluateRequest) -> EvaluateResponse:
-        """Score the interaction, persist it, and return the successful metrics."""
+    async def score(self, request: EvaluateRequest) -> ScoredEvaluation:
+        """Score the interaction, persist it, and return the request id alongside the response.
+
+        Callers that need the eval_request_id (for example, experiment runs that must
+        record the association) use this method. The public POST /v1/evaluate route
+        delegates to evaluate(), which discards the id.
+        """
         metric_names = self._select_metrics(request)
         request_id = str(uuid4())
         case = mapping.build_case(request, request_id=request_id)
@@ -65,13 +62,21 @@ class EvaluationService:
         )
 
         await self._persist(request_id, request, case, scored)
-        return EvaluateResponse(
+        response = EvaluateResponse(
             results=[
                 mapping.to_metric_result(score, library=self._library)
                 for score in scored
                 if score.error is None
             ]
         )
+        return ScoredEvaluation(request_id=request_id, response=response)
+
+    async def evaluate(self, request: EvaluateRequest) -> EvaluateResponse:
+        """Score the interaction, persist it, and return the successful metrics.
+
+        The public endpoint delegate: discards the internal request id.
+        """
+        return (await self.score(request)).response
 
     def _select_metrics(self, request: EvaluateRequest) -> tuple[str, ...]:
         """Validate and de-duplicate the caller's explicit metrics.
