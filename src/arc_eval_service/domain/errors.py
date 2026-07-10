@@ -56,3 +56,56 @@ class ModelError(Exception):
     Captured per-metric and surfaced as an errored result; never fails the whole
     evaluation request.
     """
+
+
+class ExperimentNotFoundError(Exception):
+    def __init__(self, experiment_id: str) -> None:
+        self.experiment_id = experiment_id
+        super().__init__(f"experiment not found: {experiment_id}")
+
+
+class ExperimentNameConflictError(Exception):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"experiment name already exists: {name}")
+
+
+class ModelNotFoundError(Exception):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"model not found: {name}")
+
+
+class ModelInactiveError(Exception):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"model is not active: {name}")
+
+
+class LabInferenceError(Exception):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class LabNotConfiguredError(Exception):
+    """Raised when an experiment run needs the lab but no lab URL is configured.
+
+    A deployment precondition (ARC_LAB_SERVICE_URL is unset), not an internal
+    fault: surfaced as 503 so the caller sees "temporarily unavailable" rather than
+    a generic 500.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class LabRequestInvalidError(Exception):
+    """Raised when the lab rejects the inference request as invalid (422).
+
+    A caller/config error (unknown template variables, an invalid generation
+    config), surfaced as 422 rather than 502: the experiment is misconfigured, the
+    lab is not down.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)

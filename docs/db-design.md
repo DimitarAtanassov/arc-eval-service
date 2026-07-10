@@ -2,16 +2,20 @@
 
 Audience: backend engineers. Reading time: 4 minutes.
 
-The service owns two tables. `eval_requests` holds one interaction submitted for
-evaluation; `evaluation_results` holds one metric score per row against it. Both
-are written on every `POST /v1/evaluate` call. The schema is managed by Alembic
-(`migrations/`).
+The service owns four tables. `eval_requests` holds one interaction submitted for
+evaluation; `evaluation_results` holds one metric score per row against it; both
+are written on every `POST /v1/evaluate` call. `experiments` holds a named (model,
+generation config) pair, and `experiment_runs` links each run's inference (and the
+eval request that scored it) back to its experiment. The schema is managed by
+Alembic (`migrations/`).
 
 ## ERD
 
 ```mermaid
 erDiagram
     eval_requests ||--o{ evaluation_results : "scored into"
+    experiments ||--o{ experiment_runs : "recorded as"
+    eval_requests |o--o{ experiment_runs : "scored by"
 ```
 
 ## DDL
@@ -54,6 +58,46 @@ CREATE INDEX ix_evaluation_results_inference_id    ON evaluation_results (infere
 CREATE INDEX ix_evaluation_results_metric_name     ON evaluation_results (metric_name);
 CREATE INDEX ix_evaluation_results_created_at      ON evaluation_results (created_at);
 ```
+
+## Experiments
+
+`experiments` is a named, reusable run configuration; `experiment_runs` records
+each execution and links it to the inference the lab produced and the eval request
+that scored it. Aggregating an experiment's scores joins `experiment_runs` to
+`evaluation_results` on `eval_request_id` and filters `error IS NULL`, so a
+re-evaluation of the same inference is not double-counted and a failed metric is
+not averaged in as a real zero.
+
+```sql
+CREATE TABLE experiments (
+    id                 text PRIMARY KEY,
+    name               text NOT NULL,
+    model_name         text NOT NULL,       -- referenced by name; no model catalog here
+    generation_config  jsonb NOT NULL,      -- temperature, max_output_tokens
+    description        text,
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_experiments_name UNIQUE (name)
+);
+CREATE INDEX ix_experiments_created_at ON experiments (created_at);
+```
+
+```sql
+CREATE TABLE experiment_runs (
+    id               text PRIMARY KEY,
+    experiment_id    text NOT NULL REFERENCES experiments (id) ON DELETE CASCADE,
+    inference_id     text NOT NULL,         -- the lab inference this run produced
+    eval_request_id  text REFERENCES eval_requests (id) ON DELETE SET NULL,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_experiment_runs_inference_id UNIQUE (inference_id)
+);
+CREATE INDEX ix_experiment_runs_experiment_id ON experiment_runs (experiment_id);
+CREATE INDEX ix_experiment_runs_created_at    ON experiment_runs (created_at);
+```
+
+The model is referenced by `model_name`, not a foreign key: the eval service holds
+no model catalog and the lab validates the model at run time. `inference_id` is
+unique (one run per inference); `eval_request_id` is null for a run that named no
+metrics.
 
 One metric per row (not a JSON blob) keeps the primary query paths indexable:
 filter by metric, group by model, or window by time without unpacking JSON.

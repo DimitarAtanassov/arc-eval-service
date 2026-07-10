@@ -12,5 +12,14 @@ from arc_eval_service.db.repositories.eval_requests import EvalRequestRepository
 from arc_eval_service.db.repositories.evaluation_results import (
     EvaluationResultRepository,
 )
+from arc_eval_service.db.repositories.experiments import (
+    ExperimentRepository,
+    ExperimentRunRepository,
+)
 
-__all__ = ["EvalRequestRepository", "EvaluationResultRepository"]
+__all__ = [
+    "EvalRequestRepository",
+    "EvaluationResultRepository",
+    "ExperimentRepository",
+    "ExperimentRunRepository",
+]
