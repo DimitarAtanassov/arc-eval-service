@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from arc_eval_service.domain.errors import (
     ExperimentNameConflictError,
     ExperimentNotFoundError,
+    InferenceNotFoundError,
     LabInferenceError,
     LabNotConfiguredError,
     LabRequestInvalidError,
@@ -109,6 +110,7 @@ async def _unhandled(request: Request, exc: Exception) -> Response:
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(UnknownMetricError, _unknown_metric)
     app.add_exception_handler(ExperimentNotFoundError, _not_found)
+    app.add_exception_handler(InferenceNotFoundError, _not_found)
     app.add_exception_handler(ModelNotFoundError, _not_found)
     app.add_exception_handler(ExperimentNameConflictError, _conflict)
     app.add_exception_handler(ModelInactiveError, _conflict)

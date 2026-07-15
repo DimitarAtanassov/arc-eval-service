@@ -14,7 +14,7 @@ from typing import cast
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from arc_eval_service.api.schemas import EvaluateRequest, EvaluationMetadata
+from arc_eval_service.api.schemas import EvaluationMetadata
 from arc_eval_service.catalog import load_catalog
 from arc_eval_service.db.records import NewEvalRequest, NewEvaluationResult
 from arc_eval_service.db.repositories import (
@@ -25,6 +25,7 @@ from arc_eval_service.domain.errors import UnknownMetricError
 from arc_eval_service.domain.evaluation import EvaluationCase, MetricScore
 from arc_eval_service.judging.engine import JudgeEngine
 from arc_eval_service.services.evaluation_service import EvaluationService
+from arc_eval_service.services.interaction import ResolvedInteraction
 
 pytestmark = pytest.mark.unit
 
@@ -130,12 +131,12 @@ def _service(
 _DEFAULT_METRICS = ["faithfulness", "answer_relevance"]
 
 
-def _request(*, metrics: list[str] | None = None) -> EvaluateRequest:
-    return EvaluateRequest(
+def _interaction(*, metrics: list[str] | None = None) -> ResolvedInteraction:
+    return ResolvedInteraction(
         input_text="the source article",
         output_text="the summary",
         prompt="Summarize:",
-        metrics=metrics if metrics is not None else list(_DEFAULT_METRICS),
+        metrics=tuple(metrics if metrics is not None else _DEFAULT_METRICS),
         metadata=EvaluationMetadata(inference_id="inf-1", model_id="mdl-1"),
     )
 
@@ -150,7 +151,7 @@ async def test_scored_metrics_are_returned_and_mapped() -> None:
     requests, results = _SpyRequestRepo(), _SpyResultRepo()
     service = _service(engine, requests=requests, results=results)
 
-    response = await service.evaluate(_request())
+    response = (await service.score(_interaction())).response
 
     by_name = {r.metric_name: r for r in response.results}
     assert set(by_name) == {"faithfulness", "answer_relevance"}
@@ -187,7 +188,7 @@ async def test_only_requested_metrics_are_scored() -> None:
     requests, results = _SpyRequestRepo(), _SpyResultRepo()
     service = _service(engine, requests=requests, results=results)
 
-    response = await service.evaluate(_request(metrics=["faithfulness"]))
+    response = (await service.score(_interaction(metrics=["faithfulness"]))).response
 
     # Only the metric the caller named is scored and persisted.
     assert {r.metric_name for r in response.results} == {"faithfulness"}
@@ -199,9 +200,9 @@ async def test_explicit_metrics_are_deduplicated() -> None:
     results = _SpyResultRepo()
     service = _service(engine, results=results)
 
-    response = await service.evaluate(
-        _request(metrics=["faithfulness", "faithfulness"])
-    )
+    response = (
+        await service.score(_interaction(metrics=["faithfulness", "faithfulness"]))
+    ).response
 
     assert {r.metric_name for r in response.results} == {"faithfulness"}
     assert len(results.created) == 1
@@ -212,7 +213,7 @@ async def test_unknown_metric_raises_and_persists_nothing() -> None:
     service = _service(_FakeEngine({}), requests=requests, results=results)
 
     with pytest.raises(UnknownMetricError) as exc_info:
-        await service.evaluate(_request(metrics=["faithfulness", "does-not-exist"]))
+        await service.score(_interaction(metrics=["faithfulness", "does-not-exist"]))
 
     # The known metric is accepted; only the undefined one is reported, and the
     # request is rejected before anything is scored or persisted.
@@ -231,7 +232,7 @@ async def test_errored_metrics_are_excluded_from_response_but_persisted() -> Non
     results = _SpyResultRepo()
     service = _service(engine, results=results)
 
-    response = await service.evaluate(_request())
+    response = (await service.score(_interaction())).response
 
     assert response.results == []
     assert len(results.created) == 2
@@ -252,7 +253,7 @@ async def test_persistence_failure_does_not_fail_the_request() -> None:
     )
     service = _service(engine, requests=_FailingRequestRepo())
 
-    response = await service.evaluate(_request())
+    response = (await service.score(_interaction())).response
 
     # Scores are still returned even though the observability write failed.
     assert {r.metric_name for r in response.results} == {

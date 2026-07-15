@@ -8,7 +8,7 @@ internal judging types live in :mod:`arc_eval_service.domain.evaluation`.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Version of the POST /v1/evaluate request/response wire contract. Bump on any
 # breaking change so a consumer can detect drift instead of failing silently.
@@ -31,21 +31,41 @@ class EvaluationMetadata(BaseModel):
 class EvaluateRequest(BaseModel):
     """A completed interaction to score.
 
-    The caller names the metrics to score explicitly; the service does not infer
-    them from any task classification. Every field is required so a caller cannot
-    submit a half-specified interaction and have the service guess the rest.
+    The interaction is supplied one of two ways, and exactly one must be used:
+    inline (``input_text``, ``output_text``, and ``prompt`` together), or by
+    reference (an ``inference_id`` the service resolves from arc-model-lab). The
+    caller always names the metrics explicitly; the service does not infer them
+    from any task classification.
     """
 
-    input_text: str = Field(
-        ..., min_length=1, description="The original input (source text / question)."
-    )
-    output_text: str = Field(
-        ..., min_length=1, description="The model output to evaluate."
-    )
-    prompt: str = Field(
-        ...,
+    inference_id: str | None = Field(
+        default=None,
         min_length=1,
-        description="The rendered prompt that produced the output, stored for audit.",
+        description=(
+            "Resolve the interaction from arc-model-lab by this inference id instead "
+            "of sending it inline. Mutually exclusive with input_text/output_text/prompt."
+        ),
+    )
+    input_text: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The original input (source text / question). Required unless "
+            "inference_id is given."
+        ),
+    )
+    output_text: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The model output to evaluate. Required unless inference_id is given.",
+    )
+    prompt: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The rendered prompt that produced the output, stored for audit. "
+            "Required unless inference_id is given."
+        ),
     )
     metrics: list[str] = Field(
         ...,
@@ -59,6 +79,23 @@ class EvaluateRequest(BaseModel):
         default_factory=EvaluationMetadata,
         description="Caller correlation ids (inference id, model id). May be empty.",
     )
+
+    @model_validator(mode="after")
+    def _reference_xor_inline(self) -> EvaluateRequest:
+        inline_fields = (self.input_text, self.output_text, self.prompt)
+        any_inline = any(field is not None for field in inline_fields)
+        all_inline = all(field is not None for field in inline_fields)
+        if self.inference_id is not None:
+            if any_inline:
+                raise ValueError(
+                    "provide either inference_id or the inline interaction, not both"
+                )
+            return self
+        if not all_inline:
+            raise ValueError(
+                "provide inference_id, or all of input_text, output_text, and prompt"
+            )
+        return self
 
 
 class MetricResult(BaseModel):

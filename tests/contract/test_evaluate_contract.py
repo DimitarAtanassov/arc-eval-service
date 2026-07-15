@@ -27,7 +27,9 @@ from arc_eval_service.db.repositories import (
 )
 from arc_eval_service.domain.evaluation import EvaluationCase, MetricScore
 from arc_eval_service.judging.engine import JudgeEngine
+from arc_eval_service.services.evaluation_coordinator import EvaluationCoordinator
 from arc_eval_service.services.evaluation_service import EvaluationService
+from arc_eval_service.services.interaction_resolver import InteractionResolver
 
 pytestmark = pytest.mark.contract
 
@@ -102,6 +104,14 @@ def _service() -> EvaluationService:
     )
 
 
+def _coordinator() -> EvaluationCoordinator:
+    # The wire entry point: an inline request needs no lab, so the resolver's reader
+    # is None.
+    return EvaluationCoordinator(
+        resolver=InteractionResolver(None), evaluation=_service()
+    )
+
+
 def test_request_body_matches_the_contract() -> None:
     request = EvaluateRequest.model_validate(REQUEST_BODY)
 
@@ -123,8 +133,32 @@ def test_request_requires_explicit_metrics() -> None:
         EvaluateRequest.model_validate({**REQUEST_BODY, "metrics": []})
 
 
+def test_reference_only_request_is_valid() -> None:
+    # The interaction may be supplied by reference (an inference_id to resolve).
+    request = EvaluateRequest.model_validate(
+        {"inference_id": "inf-9", "metrics": ["faithfulness"]}
+    )
+    assert request.inference_id == "inf-9"
+    assert request.input_text is None
+
+
+def test_reference_and_inline_together_are_rejected() -> None:
+    # Reference and inline are mutually exclusive.
+    with pytest.raises(ValidationError):
+        EvaluateRequest.model_validate({**REQUEST_BODY, "inference_id": "inf-9"})
+
+
+def test_partial_inline_without_reference_is_rejected() -> None:
+    # A half-specified inline interaction (missing output_text) is rejected.
+    body = {k: v for k, v in REQUEST_BODY.items() if k != "output_text"}
+    with pytest.raises(ValidationError):
+        EvaluateRequest.model_validate(body)
+
+
 async def test_response_body_matches_the_contract() -> None:
-    response = await _service().evaluate(EvaluateRequest.model_validate(REQUEST_BODY))
+    response = await _coordinator().evaluate(
+        EvaluateRequest.model_validate(REQUEST_BODY)
+    )
     payload = response.model_dump()
 
     assert set(payload) == {"results", "contract_version"}

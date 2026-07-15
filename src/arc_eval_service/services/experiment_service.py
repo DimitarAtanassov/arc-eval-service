@@ -7,7 +7,6 @@ from typing import Protocol
 from uuid import uuid4
 
 from arc_eval_service.api.schemas import (
-    EvaluateRequest,
     EvaluateResponse,
     EvaluationMetadata,
 )
@@ -31,6 +30,7 @@ from arc_eval_service.domain.experiment import (
     GenerationConfig,
 )
 from arc_eval_service.services.evaluation_service import ScoredEvaluation
+from arc_eval_service.services.interaction import ResolvedInteraction
 
 logger = logging.getLogger("arc_eval_service.services.experiment_service")
 
@@ -47,7 +47,7 @@ class Scorer(Protocol):
     """The scoring seam the service depends on (EvaluationService satisfies it)."""
 
     async def score(
-        self, request: EvaluateRequest, *, correlation_id: str | None = None
+        self, interaction: ResolvedInteraction, *, correlation_id: str | None = None
     ) -> ScoredEvaluation: ...
 
 
@@ -166,18 +166,18 @@ class ExperimentService:
         eval_request_id: str | None = None
         evaluation: EvaluateResponse | None = None
         if metrics:
-            eval_req = EvaluateRequest(
+            interaction = ResolvedInteraction(
                 input_text=inf.input_text,
                 output_text=inf.output_text,
                 prompt=inf.prompt,
-                metrics=metrics,
+                metrics=tuple(metrics),
                 metadata=EvaluationMetadata(
                     inference_id=inf.id,
                     model_id=inf.model_id,
                 ),
             )
             scored = await self._evaluation.score(
-                eval_req, correlation_id=correlation_id
+                interaction, correlation_id=correlation_id
             )
             eval_request_id = scored.request_id
             evaluation = scored.response

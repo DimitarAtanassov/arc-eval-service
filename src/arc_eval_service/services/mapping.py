@@ -11,14 +11,15 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
-from arc_eval_service.api.schemas import EvaluateRequest, MetricResult
+from arc_eval_service.api.schemas import MetricResult
 from arc_eval_service.catalog import Catalog
 from arc_eval_service.db.records import NewEvalRequest, NewEvaluationResult
 from arc_eval_service.domain.evaluation import EvaluationCase, MetricScore
+from arc_eval_service.services.interaction import ResolvedInteraction
 
 
-def build_case(request: EvaluateRequest, *, request_id: str) -> EvaluationCase:
-    """Map the wire request onto the judging engine's case.
+def build_case(interaction: ResolvedInteraction, *, request_id: str) -> EvaluationCase:
+    """Map the resolved interaction onto the judging engine's case.
 
     ``input_text`` is also passed as grounding ``context`` so grounded metrics
     (faithfulness) can check the output against the source without a separate
@@ -26,9 +27,9 @@ def build_case(request: EvaluateRequest, *, request_id: str) -> EvaluationCase:
     """
     return EvaluationCase(
         request_id=request_id,
-        input=request.input_text,
-        output=request.output_text,
-        context=[request.input_text],
+        input=interaction.input_text,
+        output=interaction.output_text,
+        context=[interaction.input_text],
     )
 
 
@@ -50,14 +51,16 @@ def to_metric_result(score: MetricScore, *, library: Catalog) -> MetricResult:
     )
 
 
-def new_eval_request(request: EvaluateRequest, *, request_id: str) -> NewEvalRequest:
+def new_eval_request(
+    interaction: ResolvedInteraction, *, request_id: str
+) -> NewEvalRequest:
     """Build the request row to persist before scoring."""
-    metadata = request.metadata
+    metadata = interaction.metadata
     return NewEvalRequest(
         id=request_id,
-        input_text=request.input_text,
-        output_text=request.output_text,
-        prompt=request.prompt,
+        input_text=interaction.input_text,
+        output_text=interaction.output_text,
+        prompt=interaction.prompt,
         inference_id=metadata.inference_id,
         model_id=metadata.model_id,
         request_metadata=metadata.model_dump(),
@@ -68,12 +71,12 @@ def new_eval_results(
     scored: list[MetricScore],
     *,
     request_id: str,
-    request: EvaluateRequest,
+    interaction: ResolvedInteraction,
     case: EvaluationCase,
     library: Catalog,
 ) -> list[NewEvaluationResult]:
     """Build one result row per score (successful or errored)."""
-    metadata = request.metadata
+    metadata = interaction.metadata
     variables = _variables(case)
     return [
         NewEvaluationResult(
