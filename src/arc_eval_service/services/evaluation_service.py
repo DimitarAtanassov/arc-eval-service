@@ -15,7 +15,7 @@ from arc_eval_service.domain.errors import UnknownMetricError
 from arc_eval_service.domain.evaluation import EvaluationCase, MetricScore
 from arc_eval_service.judging.engine import JudgeEngine
 from arc_eval_service.services import mapping
-from arc_eval_service.services.interaction import ResolvedInteraction
+from arc_eval_service.services.interaction import Interaction
 
 logger = logging.getLogger("arc_eval_service.services.evaluation_service")
 
@@ -45,15 +45,15 @@ class EvaluationService:
         self._results = results
 
     async def score(
-        self, interaction: ResolvedInteraction, *, correlation_id: str | None = None
+        self, interaction: Interaction, *, correlation_id: str | None = None
     ) -> ScoredEvaluation:
         """Score the interaction, persist it, and return the request id alongside the response.
 
-        Takes a fully-resolved interaction (the wire request is resolved upstream by
-        the InteractionResolver), so the scoring core stays free of the lab and of the
-        request's inline-or-reference shape. Callers that need the eval_request_id (for
-        example, experiment runs recording the association) read it from the result;
-        the correlation_id joins the scoring logs to the caller's other hops.
+        Takes a complete Interaction (input, output, metrics), so the scoring core is
+        the single path both the evaluate route and an experiment run reuse. Callers
+        that need the eval_request_id (for example, an experiment run recording the
+        association) read it from the result; the correlation_id joins the scoring logs
+        to the caller's other hops.
         """
         metric_names = self._select_metrics(interaction)
         request_id = str(uuid4())
@@ -78,7 +78,7 @@ class EvaluationService:
         )
         return ScoredEvaluation(request_id=request_id, response=response)
 
-    def _select_metrics(self, interaction: ResolvedInteraction) -> tuple[str, ...]:
+    def _select_metrics(self, interaction: Interaction) -> tuple[str, ...]:
         """Validate and de-duplicate the caller's explicit metrics.
 
         Every requested metric must be defined in the catalog: an unknown name is
@@ -95,7 +95,7 @@ class EvaluationService:
     async def _persist(
         self,
         request_id: str,
-        interaction: ResolvedInteraction,
+        interaction: Interaction,
         case: EvaluationCase,
         scored: list[MetricScore],
         *,
@@ -106,7 +106,6 @@ class EvaluationService:
         new_results = mapping.new_eval_results(
             scored,
             request_id=request_id,
-            interaction=interaction,
             case=case,
             library=self._library,
         )

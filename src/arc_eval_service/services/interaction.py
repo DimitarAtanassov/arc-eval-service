@@ -1,25 +1,21 @@
 """The complete interaction the scoring core operates on.
 
-The wire :class:`~arc_eval_service.api.schemas.EvaluateRequest` may carry only an
-``inference_id`` to resolve, so its interaction fields are optional. Once resolved,
-the input, output, and prompt are guaranteed present: this value object encodes
-that invariant so the scoring service and the mappers never handle a
-half-specified request, and so neither depends on how the interaction was obtained.
+A completed interaction to score: the input, the output, the metrics to score it
+against, and an optional system prompt. Both ``POST /v1/evaluate`` and an experiment
+run build this value object, so the scoring service depends on it rather than on any
+request or dataset shape.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from arc_eval_service.api.schemas import EvaluationMetadata
-
 
 @dataclass(frozen=True, slots=True)
-class ResolvedInteraction:
-    """A fully-specified interaction to score: the text, the metrics, and correlation ids."""
+class Interaction:
+    """A completed interaction to score."""
 
     input_text: str
     output_text: str
-    prompt: str
     metrics: tuple[str, ...]
-    metadata: EvaluationMetadata
+    system_text: str | None = None

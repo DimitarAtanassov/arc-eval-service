@@ -1,39 +1,60 @@
 # arc-eval-service
 
-Audience: backend engineers integrating or operating the service. Reading time: 5 minutes.
+Audience: backend engineers integrating or operating the service. Reading time: 6 minutes.
 
-arc-eval-service scores a completed AI interaction and returns one quality score
-per metric. It is the evaluation boundary in the ARC control plane: `arc-model-lab`
-calls it after inference, receives the scores, and stores them against its
-inference records.
+arc-eval-service scores completed AI interactions and returns one quality score per
+metric. A caller sends a finished interaction (the input, the model's output, and
+the metrics to score) and the service judges it with an LLM-as-a-judge. It owns the
+metrics, their rubrics, the judges, and the judge-model calls. Callers own what they
+do with the scores.
 
-The service owns scoring: the metrics, their rubrics, and the judge-model calls.
-Callers own what they do with the scores. Evaluation is LLM-as-a-judge, best
-effort, and synchronous on the request. There is no OpenTelemetry and no async or
-offline pipeline; observability is the two database tables, queried with SQL.
+It is a **standalone evaluator**: it runs no inference and calls no other service.
+It scores text it is given. Evaluation is best effort and synchronous on the
+request. There is no async pipeline; observability is the database tables, queried
+with SQL.
 
-## The single endpoint
+## Where it sits
 
+The evaluator does not talk to arc-model-lab. arc-model-lab hosts models and
+produces outputs; arc-platform is the orchestrator that connects the two. It runs
+inference on the lab, collects the output, and sends the finished interaction here
+to score.
+
+```mermaid
+flowchart LR
+    User --> APP["arc-platform<br/>(orchestrator)"]
+    APP -->|"run a model"| ML["arc-model-lab<br/>(model host)"]
+    ML -->|"output"| APP
+    APP -->|"score {input, output, metrics}"| EV["arc-eval-service<br/>(evaluator)"]
+    EV -->|"scores"| APP
+    EV --> DB[("Postgres")]
 ```
-POST /v1/evaluate
-```
 
-Send one completed interaction, naming the metrics to score. It scores each
-metric with a judge model, saves the request and every result, and returns the
-metrics that scored.
+## Two surfaces
+
+- **Evaluate** (`POST /v1/evaluate`): score one interaction now. Stateless from the
+  caller's view: send input, output, and metrics; get one score per metric back.
+- **Experiments** (`/v1/experiments`): score a **dataset** of interactions against a
+  fixed metric set, and aggregate the results. An experiment owns its metrics and a
+  dataset of completed interactions; a run scores every entry and rolls the scores up
+  per metric.
+
+Both reuse the same scoring core. An experiment run is the evaluate path applied
+once per dataset entry, bounded so a large dataset cannot overwhelm the judge.
+
+### Evaluate
 
 ```jsonc
-// request
+// POST /v1/evaluate  (request)
 {
   "input_text": "Paris is the capital of France and its largest city.",
   "output_text": "Paris is France's capital.",
-  "prompt": "Summarize the text.",
-  "metrics": ["faithfulness", "answer_relevance"],
-  "metadata": { "inference_id": "inf-1", "model_id": "qwen-1.5b" }
+  "metrics": ["faithfulness", "answer_relevance"]
 }
 
 // 200 OK
 {
+  "contract_version": "1.0.0",
   "results": [
     {
       "metric_name": "faithfulness",
@@ -46,73 +67,65 @@ metrics that scored.
 }
 ```
 
-`input_text`, `output_text`, `prompt`, `metrics`, and `metadata` are all required.
-A request that omits one, or names an empty `metrics` list, is rejected with `422`.
-The only other route is `GET /health`, a liveness check.
+- The request body is exactly `input_text`, `output_text`, and a non-empty `metrics`
+  list. Any other field (or an empty `metrics`) is rejected with `422`
+  (`extra="forbid"`). An unknown metric name is `404`, before anything is scored.
+- Scoring is best effort per metric. A metric that fails (for example, no judge model
+  configured) is persisted with its error but omitted from the response, so a caller
+  never stores an infrastructure failure as a real zero. With no model profile
+  configured, the response is `{"results": []}` and the errored rows are still saved.
 
-### How scoring works
+### Experiments
 
-- The caller names the `metrics` to score on every request; the service scores
-  exactly those. There is no task-type inference. An unknown metric name is
-  rejected with `404` before anything is scored or persisted.
-- Metric and judge prompts live in per-file YAML under
-  [catalog/metric/](src/arc_eval_service/catalog/metric) and
-  [catalog/judge/](src/arc_eval_service/catalog/judge), loaded and validated at
-  startup. A metric is a rubric; a judge is an optional system prompt plus a
-  model. The engine composes `[judge.system_prompt?] + metric.rubric` and requests
-  a structured verdict from the model.
-- Scoring is best effort per metric. A metric that fails (for example, no judge
-  model is configured) is persisted with its error but omitted from the response,
-  so a caller never stores an infrastructure failure as a real score of zero.
-- With no model profile configured, `/v1/evaluate` returns `{"results": []}` and
-  records the errored metrics. Configure a profile to get scores (see
-  Configuration).
+An experiment is created with its metric set and, optionally, a seed dataset; more
+entries are appended later. Running it scores the whole dataset and returns
+per-metric aggregates. The full contract, request and response bodies included, is in
+[docs/arc-evaluator.md](docs/arc-evaluator.md).
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /v1/experiments` | Create an experiment (metrics, optional inline dataset). |
+| `GET /v1/experiments` | List experiments, newest first. |
+| `GET /v1/experiments/{id}` | Get one experiment (with its dataset size). |
+| `POST /v1/experiments/{id}/dataset` | Append dataset entries. |
+| `GET /v1/experiments/{id}/dataset` | List the dataset entries. |
+| `POST /v1/experiments/{id}/run` | Score the metrics over the dataset. |
+| `GET /v1/experiments/{id}/results` | Latest-run metric aggregates. |
+| `GET /v1/experiments/{id}/compare/{other}` | Compare two experiments' aggregates. |
+
+### Browse and health
+
+`GET /v1/metrics` lists the metric catalog. `GET /v1/requests[/{id}]` and
+`GET /v1/results` browse the persisted interactions and scores (filter results by
+`metric`). `GET /health` is a liveness check.
 
 ## Data model
+
+Five tables, owned by this service. Evaluate writes the first two; experiments add
+the last three.
 
 ```mermaid
 erDiagram
     eval_requests ||--o{ evaluation_results : "scored into"
-
-    eval_requests {
-        uuid id PK
-        text input_text
-        text output_text
-        text prompt
-        text inference_id
-        text model_id
-        jsonb request_metadata
-        timestamptz created_at
-    }
-    evaluation_results {
-        uuid id PK
-        uuid eval_request_id FK
-        text inference_id
-        text model_id
-        text metric_name
-        float score
-        bool passed
-        text reasoning
-        text evaluator_name
-        text evaluator_version
-        jsonb judge
-        jsonb prompt
-        float latency_ms
-        text error
-        timestamptz created_at
-    }
+    experiments ||--o{ experiment_dataset_entries : "has"
+    experiments ||--o{ experiment_runs : "has"
+    experiment_runs ||--o{ experiment_run_items : "has"
+    experiment_run_items }o--|| experiment_dataset_entries : "scores"
+    experiment_run_items }o--|| eval_requests : "produces"
 ```
 
-- `eval_requests`: one interaction submitted for evaluation, plus the caller's
-  correlation ids lifted out of `metadata`.
-- `evaluation_results`: one metric score per row. `inference_id` and `model_id`
-  are denormalized from the request so score-by-metric and score-by-model queries
-  need no join. Each row also carries `judge` (model, settings, system prompt) and
-  `prompt` (metric template and input variables) as JSONB provenance.
+- `eval_requests` / `evaluation_results`: one interaction and one metric score per
+  row, written on every scored interaction (whether standalone evaluate or an
+  experiment run entry).
+- `experiments`: a name, a metric set, and a description.
+- `experiment_dataset_entries`: one completed interaction (`input_text`,
+  `output_text`, optional `system_text`) per row.
+- `experiment_runs` / `experiment_run_items`: one run of the metrics over the
+  dataset, and one row per dataset entry it scored linking to that entry's
+  `eval_requests` row. Aggregation joins run items back to `evaluation_results`.
 
-Both tables are written on every call. One metric per row (not a JSON blob) keeps
-the query paths (by metric, by model, over time) indexable in plain SQL. The
-`judge` and `prompt` provenance is denormalized JSONB on purpose; see
+One metric per row (not a JSON blob) keeps the query paths (by metric, over time)
+indexable in plain SQL. Column-level detail and the design rationale are in
 [docs/db-design.md](docs/db-design.md).
 
 ## Project layout
@@ -121,24 +134,27 @@ the query paths (by metric, by model, over time) indexable in plain SQL. The
 src/arc_eval_service/
   app.py            # builds the FastAPI app, mounts the routers
   api/              # HTTP boundary (the only FastAPI-aware layer)
-    routes/         # evaluate.py, health.py
-    schemas.py      # request and response wire DTOs (the arc-model-lab contract)
+    routes/         # evaluate.py, experiments.py, reads.py, health.py
+    schemas.py      # evaluate wire DTOs
+    experiment_schemas.py  # experiment + dataset wire DTOs
     dependencies.py # dependency injection (composition root)
+    errors.py       # domain error -> HTTP mapping
   domain/           # framework-free core
     evaluation.py   # EvaluationCase, MetricScore
-    errors.py       # domain errors, captured per-metric by the judge engine
+    experiment.py   # metric aggregates
+    errors.py       # domain errors
   services/         # application layer
-    evaluation_service.py  # score -> persist -> respond
+    evaluation_service.py  # score -> persist -> respond (the scoring core)
+    experiment_service.py  # create, dataset, run (over the scoring core)
+    interaction.py  # the Interaction value object the scoring core takes
     mapping.py      # pure wire <-> domain <-> record mappers
   judging/          # judge engine, the JudgeModel port, registry, provider adapters
-  catalog/          # the evaluator catalog
-    metric/         # MetricDefinition, render, + one YAML per metric
-    judge/          # JudgeDefinition + one YAML per judge
+  catalog/          # the evaluator catalog (metric/ and judge/, one YAML each)
   db/
     engine.py       # async engine and session factory (Postgres only)
-    models.py       # eval_requests, evaluation_results
+    models.py       # the five tables
     records.py      # persistence DTOs (repository write-model)
-    repositories/   # one per table, with pure record <-> row mappers
+    repositories/   # one module per table, with pure record <-> row mappers
   core/
     config.py       # settings, read from ARC_EVAL_* environment variables
     logging.py      # JSON structured logging
@@ -147,17 +163,17 @@ migrations/         # Alembic migrations
 
 ## Configuration
 
-Configuration lives in one place: a `.env` file at the repo root. Copy the
-template and edit it.
+Configuration lives in one place: a `.env` file at the repo root. Copy the template
+and edit it.
 
 ```bash
 cp .env.example .env
 ```
 
 `.env` is loaded automatically by `docker compose up` and by the runtime Make
-targets (`make run`, `make migrate`, ...). It is git-ignored, so secrets stay
-local. Every service setting is an `ARC_EVAL_*` variable; a value set directly in
-the process environment takes precedence over the file.
+targets (`make run`, `make migrate`, ...). It is git-ignored, so secrets stay local.
+Every service setting is an `ARC_EVAL_*` variable; a value set directly in the
+process environment takes precedence over the file.
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
@@ -171,10 +187,9 @@ the process environment takes precedence over the file.
 | `ARC_EVAL_LOG_LEVEL` | no | Log level for the JSON logger. Defaults to `INFO`. |
 | `OPENAI_API_KEY` | no | Example provider key. Any name works as long as a profile's `api_key_env` points at it; the value is read from the environment at call time. |
 
-A judge-model profile names a provider, a model id, and the env var holding the
-key. One OpenAI-compatible adapter covers OpenAI, Azure OpenAI, and self-hosted
-servers (vLLM, Ollama, and similar) by changing `base_url`. The relevant lines in
-`.env`:
+A judge-model profile names a provider, a model id, and the env var holding the key.
+One OpenAI-compatible adapter covers OpenAI, Azure OpenAI, and self-hosted servers
+(vLLM, Ollama, and similar) by changing `base_url`:
 
 ```bash
 ARC_EVAL_MODEL_PROFILES='[{"name":"default","provider":"openai_compatible","model":"gpt-4o-mini","api_key_env":"OPENAI_API_KEY"}]'
@@ -194,8 +209,8 @@ docker compose up
 ```
 
 To run from source with auto-reload, start just the database, then run the app
-against it. `make run` loads `.env`, whose default `ARC_EVAL_DATABASE_URL` points
-at the compose Postgres on localhost.
+against it. `make run` loads `.env`, whose default `ARC_EVAL_DATABASE_URL` points at
+the compose Postgres on localhost.
 
 ```bash
 docker compose up db
@@ -207,7 +222,7 @@ Score an interaction:
 ```bash
 curl -s localhost:8000/v1/evaluate \
   -H 'content-type: application/json' \
-  -d '{"input_text":"Paris is the capital of France.","output_text":"Paris is the capital.","prompt":"Summarize the text.","metrics":["faithfulness","answer_relevance"],"metadata":{"inference_id":"inf-1"}}'
+  -d '{"input_text":"Paris is the capital of France.","output_text":"Paris is the capital.","metrics":["faithfulness","answer_relevance"]}'
 ```
 
 ## Testing

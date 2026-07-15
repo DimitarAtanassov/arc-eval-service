@@ -11,9 +11,7 @@ pytestmark = pytest.mark.integration
 _VALID_BODY = {
     "input_text": "Paris is the capital of France and its largest city.",
     "output_text": "Paris is France's capital.",
-    "prompt": "Summarize the text.",
     "metrics": ["faithfulness", "answer_relevance"],
-    "metadata": {"inference_id": "inf-1", "model_id": "mdl-1"},
 }
 
 
@@ -74,10 +72,11 @@ async def test_evaluate_persists_request_and_results(
     finally:
         engine.dispose()
 
-    assert [r.inference_id for r in requests] == ["inf-1"]
+    # Evaluate carries no lab correlation, so the ids persist as null.
+    assert [r.inference_id for r in requests] == [None]
     assert {r.metric_name for r in results} == {"faithfulness", "answer_relevance"}
     assert all(r.error is None for r in results)
-    assert all(r.inference_id == "inf-1" for r in results)
+    assert all(r.inference_id is None for r in results)
 
 
 async def test_no_judge_model_returns_no_scores_but_persists_errors(

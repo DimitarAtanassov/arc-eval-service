@@ -8,6 +8,7 @@ editing the others.
 
 from __future__ import annotations
 
+from arc_eval_service.db.repositories.dataset_entries import DatasetEntryRepository
 from arc_eval_service.db.repositories.eval_requests import EvalRequestRepository
 from arc_eval_service.db.repositories.evaluation_results import (
     EvaluationResultRepository,
@@ -16,10 +17,13 @@ from arc_eval_service.db.repositories.experiments import (
     ExperimentRepository,
     ExperimentRunRepository,
 )
+from arc_eval_service.db.repositories.run_items import RunItemRepository
 
 __all__ = [
+    "DatasetEntryRepository",
     "EvalRequestRepository",
     "EvaluationResultRepository",
     "ExperimentRepository",
     "ExperimentRunRepository",
+    "RunItemRepository",
 ]

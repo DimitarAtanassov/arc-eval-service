@@ -84,11 +84,8 @@ class NewExperiment(BaseModel):
 
     id: str
     name: str
-    model_name: str
-    generation_config: dict[str, Any]
-    prompt_template: str | None
-    variables: dict[str, str]
     description: str | None
+    metrics: list[str]
     created_at: datetime
 
 
@@ -97,21 +94,17 @@ class StoredExperiment(BaseModel):
 
     id: str
     name: str
-    model_name: str
-    generation_config: dict[str, Any]
-    prompt_template: str | None
-    variables: dict[str, str]
     description: str | None
+    metrics: list[str]
     created_at: datetime
 
 
 class NewExperimentRun(BaseModel):
-    """An experiment run to persist after inference (and optional evaluation)."""
+    """An experiment run to persist: one execution of the metrics over the dataset."""
 
     id: str
     experiment_id: str
-    inference_id: str
-    eval_request_id: str | None
+    status: str
     created_at: datetime
 
 
@@ -120,6 +113,49 @@ class StoredExperimentRun(BaseModel):
 
     id: str
     experiment_id: str
-    inference_id: str
+    status: str
+    created_at: datetime
+
+
+class NewDatasetEntry(BaseModel):
+    """One dataset entry to persist: a completed interaction to score later."""
+
+    id: str
+    experiment_id: str
+    position: int
+    input_text: str
+    system_text: str | None
+    output_text: str
+    created_at: datetime
+
+
+class StoredDatasetEntry(BaseModel):
+    """A persisted dataset entry read back from storage."""
+
+    id: str
+    experiment_id: str
+    position: int
+    input_text: str
+    system_text: str | None
+    output_text: str
+    created_at: datetime
+
+
+class NewRunItem(BaseModel):
+    """One run item to persist: a dataset entry scored in a run, linked to its eval request."""
+
+    id: str
+    run_id: str
+    dataset_entry_id: str
+    eval_request_id: str | None
+    created_at: datetime
+
+
+class StoredRunItem(BaseModel):
+    """A persisted run item read back from storage."""
+
+    id: str
+    run_id: str
+    dataset_entry_id: str
     eval_request_id: str | None
     created_at: datetime

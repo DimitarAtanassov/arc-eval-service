@@ -1,299 +1,228 @@
-from __future__ import annotations
+"""Unit tests for the experiment service (dataset evaluator).
 
-from datetime import UTC, datetime
-from typing import Any
+The stores and the scorer are in-memory doubles, so these tests exercise the
+service's own logic: metric validation at creation, dataset append positions, the
+empty-dataset guard, the bounded fan-out over the dataset, and aggregation.
+"""
+
+from __future__ import annotations
 
 import pytest
 
-from arc_eval_service.api.schemas import EvaluateResponse
-from arc_eval_service.clients.lab_inference_client import (
-    InferenceResult,
-    InferenceRunRequest,
-)
+from arc_eval_service.api.schemas import EvaluateResponse, MetricResult
 from arc_eval_service.db.records import (
+    NewDatasetEntry,
     NewExperiment,
     NewExperimentRun,
+    NewRunItem,
+    StoredDatasetEntry,
     StoredExperiment,
     StoredExperimentRun,
+    StoredRunItem,
 )
 from arc_eval_service.domain.errors import (
-    ExperimentNotFoundError,
-    LabNotConfiguredError,
-    ModelNotFoundError,
-)
-from arc_eval_service.domain.experiment import (
-    ExperimentMetricAggregate,
-    GenerationConfig,
+    EmptyDatasetError,
+    UnknownMetricError,
 )
 from arc_eval_service.services.evaluation_service import ScoredEvaluation
 from arc_eval_service.services.experiment_service import (
+    DatasetEntryInput,
     ExperimentService,
-    ExperimentStore,
-    InferenceRunner,
-    RunStore,
-    Scorer,
 )
-from arc_eval_service.services.interaction import ResolvedInteraction
+from arc_eval_service.services.interaction import Interaction
 
 pytestmark = pytest.mark.unit
 
-_CONFIG = {"temperature": 0.0, "max_output_tokens": 64}
-
-
-def _stored_experiment(
-    exp_id: str = "exp-1",
-    name: str = "baseline",
-    *,
-    prompt_template: str | None = None,
-    variables: dict[str, str] | None = None,
-) -> StoredExperiment:
-    return StoredExperiment(
-        id=exp_id,
-        name=name,
-        model_name="candidate",
-        generation_config=_CONFIG,
-        prompt_template=prompt_template,
-        variables=variables or {},
-        description=None,
-        created_at=datetime.now(UTC),
-    )
-
-
-def _inference() -> InferenceResult:
-    return InferenceResult(
-        id="inf-1",
-        model_id="mdl-1",
-        input_text="source",
-        prompt="Summarize:",
-        output_text="summary",
-        latency_ms=10,
-        prompt_tokens=1,
-        completion_tokens=1,
-        created_at=datetime.now(UTC),
-    )
-
 
 class _FakeExperiments:
-    def __init__(
-        self,
-        stored: StoredExperiment | None = None,
-        aggregates: list[ExperimentMetricAggregate] | None = None,
-    ) -> None:
-        self.stored = stored
-        self.aggregates = aggregates or []
-        self.created: list[NewExperiment] = []
+    def __init__(self) -> None:
+        self.items: dict[str, StoredExperiment] = {}
 
-    async def create(
-        self, item: NewExperiment, *, session: Any = None
-    ) -> StoredExperiment:
-        self.created.append(item)
-        return StoredExperiment(**item.model_dump())
+    async def create(self, item: NewExperiment) -> StoredExperiment:
+        stored = StoredExperiment(**item.model_dump())
+        self.items[item.id] = stored
+        return stored
 
     async def get(self, experiment_id: str) -> StoredExperiment | None:
-        return self.stored
+        return self.items.get(experiment_id)
 
     async def list_recent(self, limit: int) -> list[StoredExperiment]:
-        return [self.stored] if self.stored is not None else []
+        return list(self.items.values())[:limit]
 
-    async def aggregate_scores(
-        self, experiment_id: str
-    ) -> list[ExperimentMetricAggregate]:
-        return self.aggregates
+    async def aggregate_scores(self, experiment_id: str) -> list:
+        return []
+
+
+class _FakeDatasets:
+    def __init__(self) -> None:
+        self.entries: list[StoredDatasetEntry] = []
+
+    async def create_many(
+        self, items: list[NewDatasetEntry]
+    ) -> list[StoredDatasetEntry]:
+        stored = [StoredDatasetEntry(**item.model_dump()) for item in items]
+        self.entries.extend(stored)
+        return stored
+
+    async def list_for_experiment(
+        self, experiment_id: str, limit: int
+    ) -> list[StoredDatasetEntry]:
+        rows = [e for e in self.entries if e.experiment_id == experiment_id]
+        return sorted(rows, key=lambda e: e.position)[:limit]
+
+    async def count_for_experiment(self, experiment_id: str) -> int:
+        return len([e for e in self.entries if e.experiment_id == experiment_id])
+
+    async def counts_for_experiments(self, experiment_ids: list[str]) -> dict[str, int]:
+        return {eid: await self.count_for_experiment(eid) for eid in experiment_ids}
 
 
 class _FakeRuns:
     def __init__(self) -> None:
-        self.created: list[NewExperimentRun] = []
+        self.items: list[NewExperimentRun] = []
 
-    async def create(
-        self, item: NewExperimentRun, *, session: Any = None
-    ) -> StoredExperimentRun:
-        self.created.append(item)
+    async def create(self, item: NewExperimentRun) -> StoredExperimentRun:
+        self.items.append(item)
         return StoredExperimentRun(**item.model_dump())
 
 
-class _FakeLab:
-    def __init__(
-        self, result: InferenceResult | None = None, error: Exception | None = None
-    ) -> None:
-        self.result = result or _inference()
-        self.error = error
-        self.calls: list[InferenceRunRequest] = []
+class _FakeRunItems:
+    def __init__(self) -> None:
+        self.items: list[NewRunItem] = []
 
-    async def run(
-        self, request: InferenceRunRequest, *, correlation_id: str | None = None
-    ) -> InferenceResult:
-        self.calls.append(request)
-        if self.error is not None:
-            raise self.error
-        return self.result
+    async def create_many(self, items: list[NewRunItem]) -> list[StoredRunItem]:
+        self.items.extend(items)
+        return [StoredRunItem(**item.model_dump()) for item in items]
 
 
-class _FakeEval:
-    def __init__(self, response: EvaluateResponse | None = None) -> None:
-        self.response = response or EvaluateResponse(results=[])
-        self.calls: list[ResolvedInteraction] = []
+class _FakeScorer:
+    """Returns a fixed score per metric and records the interactions it scored."""
+
+    def __init__(self, *, score: float = 0.8) -> None:
+        self.score_value = score
+        self.seen: list[Interaction] = []
+        self._counter = 0
 
     async def score(
-        self, interaction: ResolvedInteraction, *, correlation_id: str | None = None
+        self, interaction: Interaction, *, correlation_id: str | None = None
     ) -> ScoredEvaluation:
-        self.calls.append(interaction)
-        return ScoredEvaluation(request_id="req-9", response=self.response)
+        self._counter += 1
+        self.seen.append(interaction)
+        results = [
+            MetricResult(
+                metric_name=metric,
+                score=self.score_value,
+                evaluator_name=metric,
+            )
+            for metric in interaction.metrics
+        ]
+        return ScoredEvaluation(
+            request_id=f"req-{self._counter}",
+            response=EvaluateResponse(results=results),
+        )
 
 
 def _service(
-    *,
-    experiments: ExperimentStore | None = None,
-    runs: RunStore | None = None,
-    lab_client: InferenceRunner | None = None,
-    evaluation: Scorer | None = None,
-    with_lab: bool = True,
-) -> ExperimentService:
-    return ExperimentService(
-        experiments=experiments or _FakeExperiments(_stored_experiment()),
-        runs=runs or _FakeRuns(),
-        lab_client=lab_client
-        if lab_client is not None
-        else (_FakeLab() if with_lab else None),
-        evaluation=evaluation or _FakeEval(),
-    )
-
-
-async def test_create_persists_and_returns_experiment() -> None:
-    experiments = _FakeExperiments()
-    service = _service(experiments=experiments)
-
-    result = await service.create(
-        name="baseline",
-        model_name="candidate",
-        generation_config=GenerationConfig(temperature=0.0, max_output_tokens=64),
-    )
-
-    assert result.name == "baseline"
-    assert result.model_name == "candidate"
-    assert experiments.created[0].generation_config == _CONFIG
-
-
-async def test_get_returns_experiment() -> None:
-    service = _service(experiments=_FakeExperiments(_stored_experiment()))
-    assert (await service.get("exp-1")).id == "exp-1"
-
-
-async def test_get_unknown_raises_not_found() -> None:
-    service = _service(experiments=_FakeExperiments(None))
-    with pytest.raises(ExperimentNotFoundError):
-        await service.get("missing")
-
-
-async def test_list_recent_returns_experiments() -> None:
-    service = _service(experiments=_FakeExperiments(_stored_experiment()))
-    assert len(await service.list_recent(10)) == 1
-
-
-async def test_run_requires_a_lab_client() -> None:
-    service = _service(with_lab=False)
-    with pytest.raises(LabNotConfiguredError):
-        await service.run("exp-1", "text", metrics=None)
-
-
-async def test_run_unknown_experiment_raises_not_found() -> None:
-    service = _service(experiments=_FakeExperiments(None))
-    with pytest.raises(ExperimentNotFoundError):
-        await service.run("missing", "text")
-
-
-async def test_run_without_metrics_skips_evaluation() -> None:
+    *, scorer: _FakeScorer | None = None, metrics: frozenset[str] | None = None
+) -> tuple[ExperimentService, _FakeDatasets, _FakeRuns, _FakeRunItems, _FakeScorer]:
+    datasets = _FakeDatasets()
     runs = _FakeRuns()
-    evaluation = _FakeEval()
-    service = _service(runs=runs, evaluation=evaluation)
-
-    result = await service.run("exp-1", "text", metrics=None)
-
-    assert result.evaluation is None
-    assert result.eval_request_id is None
-    assert evaluation.calls == []
-    assert runs.created[0].eval_request_id is None
-
-
-async def test_run_with_metrics_scores_and_links() -> None:
-    runs = _FakeRuns()
-    evaluation = _FakeEval()
-    lab = _FakeLab()
-    service = _service(runs=runs, evaluation=evaluation, lab_client=lab)
-
-    result = await service.run("exp-1", "text", metrics=["faithfulness"])
-
-    assert result.eval_request_id == "req-9"
-    assert result.evaluation is not None
-    assert runs.created[0].eval_request_id == "req-9"
-    assert runs.created[0].inference_id == "inf-1"
-    assert lab.calls[0].model_name == "candidate"
-    assert evaluation.calls[0].metadata.inference_id == "inf-1"
-
-
-async def test_run_propagates_model_not_found() -> None:
-    runs = _FakeRuns()
-    service = _service(
-        runs=runs, lab_client=_FakeLab(error=ModelNotFoundError("candidate"))
+    run_items = _FakeRunItems()
+    used_scorer = scorer or _FakeScorer()
+    service = ExperimentService(
+        experiments=_FakeExperiments(),
+        datasets=datasets,
+        runs=runs,
+        run_items=run_items,
+        evaluation=used_scorer,
+        metric_names=metrics or frozenset({"faithfulness", "answer_relevance"}),
     )
-
-    with pytest.raises(ModelNotFoundError):
-        await service.run("exp-1", "text", metrics=["faithfulness"])
-
-    assert runs.created == []
+    return service, datasets, runs, run_items, used_scorer
 
 
-async def test_results_aggregates_metrics() -> None:
-    aggregates = [
-        ExperimentMetricAggregate(
-            metric_name="faithfulness", average_score=0.8, evaluated_count=2
-        )
+def _entries(n: int) -> list[DatasetEntryInput]:
+    return [
+        DatasetEntryInput(input_text=f"in-{i}", output_text=f"out-{i}")
+        for i in range(n)
     ]
-    service = _service(experiments=_FakeExperiments(_stored_experiment(), aggregates))
-
-    results = await service.results("exp-1")
-
-    assert results.experiment_id == "exp-1"
-    assert results.metrics[0].metric_name == "faithfulness"
 
 
-async def test_compare_returns_both_experiments() -> None:
-    aggregates = [
-        ExperimentMetricAggregate(
-            metric_name="faithfulness", average_score=0.8, evaluated_count=1
-        )
-    ]
-    service = _service(experiments=_FakeExperiments(_stored_experiment(), aggregates))
-
-    compared = await service.compare("exp-1", "exp-1")
-
-    assert len(compared) == 2
+async def test_create_validates_metrics_against_the_catalog() -> None:
+    service, *_ = _service()
+    with pytest.raises(UnknownMetricError):
+        await service.create(name="e", metrics=["not-a-metric"])
 
 
-async def test_create_stores_prompt_template_and_variables() -> None:
-    experiments = _FakeExperiments()
-    service = _service(experiments=experiments)
+async def test_create_persists_experiment_and_seed_dataset() -> None:
+    service, datasets, *_ = _service()
 
-    await service.create(
-        name="translate-fr",
-        model_name="candidate",
-        generation_config=GenerationConfig(temperature=0.0, max_output_tokens=64),
-        prompt_template="translate",
-        variables={"target_language": "French"},
+    experiment = await service.create(
+        name="e", metrics=["faithfulness"], dataset=_entries(2)
     )
 
-    assert experiments.created[0].prompt_template == "translate"
-    assert experiments.created[0].variables == {"target_language": "French"}
+    assert experiment.metrics == ["faithfulness"]
+    assert await service.dataset_size(experiment.id) == 2
+    assert [e.position for e in datasets.entries] == [0, 1]
 
 
-async def test_run_forwards_prompt_template_and_variables_to_lab() -> None:
-    lab = _FakeLab()
-    stored = _stored_experiment(
-        prompt_template="translate", variables={"target_language": "French"}
+async def test_add_dataset_appends_after_existing_positions() -> None:
+    service, datasets, *_ = _service()
+    experiment = await service.create(
+        name="e", metrics=["faithfulness"], dataset=_entries(2)
     )
-    service = _service(experiments=_FakeExperiments(stored), lab_client=lab)
 
-    await service.run("exp-1", "hola", metrics=None)
+    addition = await service.add_dataset(experiment.id, _entries(3))
 
-    assert lab.calls[0].prompt_template == "translate"
-    assert lab.calls[0].variables == {"target_language": "French"}
+    assert addition.added == 3
+    assert addition.dataset_size == 5
+    assert [e.position for e in datasets.entries] == [0, 1, 2, 3, 4]
+
+
+async def test_run_rejects_an_empty_dataset() -> None:
+    service, *_ = _service()
+    experiment = await service.create(name="e", metrics=["faithfulness"])
+
+    with pytest.raises(EmptyDatasetError):
+        await service.run(experiment.id)
+
+
+async def test_run_scores_every_entry_and_aggregates() -> None:
+    scorer = _FakeScorer(score=0.8)
+    service, _datasets, runs, run_items, _ = _service(
+        scorer=scorer, metrics=frozenset({"faithfulness"})
+    )
+    experiment = await service.create(
+        name="e", metrics=["faithfulness"], dataset=_entries(3)
+    )
+
+    result = await service.run(experiment.id)
+
+    # Every entry was scored, one run and one run item per entry were written.
+    assert len(scorer.seen) == 3
+    assert scorer.seen[0].metrics == ("faithfulness",)
+    assert len(runs.items) == 1
+    assert len(run_items.items) == 3
+    assert result.status == "completed"
+    assert result.dataset_size == 3
+    assert result.scored_count == 3
+    aggregate = {a.metric_name: a for a in result.results}["faithfulness"]
+    assert aggregate.average_score == pytest.approx(0.8)
+    assert aggregate.evaluated_count == 3
+
+
+async def test_run_passes_system_text_to_the_interaction() -> None:
+    scorer = _FakeScorer()
+    service, *_ = _service(scorer=scorer, metrics=frozenset({"faithfulness"}))
+    experiment = await service.create(name="e", metrics=["faithfulness"])
+    await service.add_dataset(
+        experiment.id,
+        [
+            DatasetEntryInput(
+                input_text="in", output_text="out", system_text="be precise"
+            )
+        ],
+    )
+
+    await service.run(experiment.id)
+
+    assert scorer.seen[0].system_text == "be precise"
