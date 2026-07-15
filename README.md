@@ -101,8 +101,8 @@ per-metric aggregates. The full contract, request and response bodies included, 
 
 ## Data model
 
-Five tables, owned by this service. Evaluate writes the first two; experiments add
-the last three.
+Six tables, owned by this service. Evaluate writes the first two; experiments add
+the other four.
 
 ```mermaid
 erDiagram
@@ -137,6 +137,7 @@ src/arc_eval_service/
     routes/         # evaluate.py, experiments.py, reads.py, health.py
     schemas.py      # evaluate wire DTOs
     experiment_schemas.py  # experiment + dataset wire DTOs
+    read_schemas.py # browse (reads) wire DTOs
     dependencies.py # dependency injection (composition root)
     errors.py       # domain error -> HTTP mapping
   domain/           # framework-free core
@@ -148,11 +149,12 @@ src/arc_eval_service/
     experiment_service.py  # create, dataset, run (over the scoring core)
     interaction.py  # the Interaction value object the scoring core takes
     mapping.py      # pure wire <-> domain <-> record mappers
+    read_service.py # browse endpoints (reads only)
   judging/          # judge engine, the JudgeModel port, registry, provider adapters
   catalog/          # the evaluator catalog (metric/ and judge/, one YAML each)
   db/
     engine.py       # async engine and session factory (Postgres only)
-    models.py       # the five tables
+    models.py       # the six tables
     records.py      # persistence DTOs (repository write-model)
     repositories/   # one module per table, with pure record <-> row mappers
   core/
