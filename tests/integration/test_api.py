@@ -108,7 +108,9 @@ async def test_unhandled_error_returns_500_with_correlation_id(clean_db: str) ->
     from arc_eval_service.app import create_app
 
     class _BoomService:
-        async def evaluate(self, request: object) -> object:
+        async def score(
+            self, interaction: object, *, correlation_id: object = None
+        ) -> object:
             raise RuntimeError("unexpected")
 
     app = create_app()

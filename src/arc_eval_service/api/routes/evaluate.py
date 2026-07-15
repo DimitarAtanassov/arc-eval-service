@@ -1,6 +1,6 @@
-"""The single evaluation route: score one completed interaction inline.
+"""The single evaluation route: score one completed interaction, inline or by id.
 
-Selecting the service is request wiring, not business logic. No orchestration or
+Selecting the use-case is request wiring, not business logic. No orchestration or
 persistence lives here.
 """
 
@@ -10,16 +10,24 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from arc_eval_service.api.dependencies import get_evaluation_service
+from arc_eval_service.api.dependencies import (
+    get_correlation_id,
+    get_evaluation_coordinator,
+)
 from arc_eval_service.api.schemas import EvaluateRequest, EvaluateResponse
-from arc_eval_service.services.evaluation_service import EvaluationService
+from arc_eval_service.services.evaluation_coordinator import EvaluationCoordinator
 
 router = APIRouter(tags=["evaluation"])
 
-ServiceDep = Annotated[EvaluationService, Depends(get_evaluation_service)]
+CoordinatorDep = Annotated[EvaluationCoordinator, Depends(get_evaluation_coordinator)]
+CorrelationIdDep = Annotated[str, Depends(get_correlation_id)]
 
 
 @router.post("/v1/evaluate", response_model=EvaluateResponse)
-async def evaluate(request: EvaluateRequest, service: ServiceDep) -> EvaluateResponse:
-    """Score one interaction across the requested metrics and return the results."""
-    return await service.evaluate(request)
+async def evaluate(
+    request: EvaluateRequest,
+    coordinator: CoordinatorDep,
+    correlation_id: CorrelationIdDep,
+) -> EvaluateResponse:
+    """Score one interaction (sent inline, or resolved from the lab by inference_id)."""
+    return await coordinator.evaluate(request, correlation_id=correlation_id)

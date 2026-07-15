@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -9,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from arc_eval_service.domain.errors import (
+    InferenceNotFoundError,
     LabInferenceError,
     LabRequestInvalidError,
     ModelInactiveError,
@@ -115,6 +117,52 @@ class LabInferenceClient:
         if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
             raise LabRequestInvalidError(
                 _detail(response) or "lab rejected the request as invalid"
+            )
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise LabInferenceError(f"lab returned {response.status_code}") from exc
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise LabInferenceError("lab returned a non-JSON response") from exc
+
+        try:
+            return InferenceResult.model_validate(payload)
+        except ValidationError as exc:
+            raise LabInferenceError("lab returned an unexpected schema") from exc
+
+    async def get_inference(
+        self, inference_id: str, *, correlation_id: str | None = None
+    ) -> InferenceResult:
+        """Fetch one completed inference by id.
+
+        Raises InferenceNotFoundError on 404 (no such inference), LabRequestInvalidError
+        on 422 (a malformed id, a caller error), and LabInferenceError for every other
+        failure so the resolver has typed signals to surface.
+        """
+        cid = correlation_id or str(uuid4())
+        # Encode the id as a single path segment so a crafted value cannot alter the
+        # request target (path traversal / SSRF) against the fixed lab base URL.
+        path = f"/inference/{quote(inference_id, safe='')}"
+        logger.info(
+            "fetching lab inference",
+            extra={"correlation_id": cid, "inference_id": inference_id, "path": path},
+        )
+        try:
+            response = await self._http.get(path, headers={"X-Correlation-ID": cid})
+        except httpx.ConnectError as exc:
+            raise LabInferenceError("lab connection failed") from exc
+        except httpx.HTTPError as exc:
+            raise LabInferenceError("lab request failed") from exc
+
+        if response.status_code == httpx.codes.NOT_FOUND:
+            raise InferenceNotFoundError(inference_id)
+        if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+            raise LabRequestInvalidError(
+                _detail(response) or "lab rejected the inference id as invalid"
             )
 
         try:

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from arc_eval_service.api.schemas import EvaluateRequest, EvaluationMetadata
+from arc_eval_service.api.schemas import EvaluationMetadata
 from arc_eval_service.catalog import Catalog
 from arc_eval_service.catalog.judge import JudgeDefinition
 from arc_eval_service.catalog.metric import MetricDefinition
 from arc_eval_service.domain.evaluation import MetricScore
+from arc_eval_service.services.interaction import ResolvedInteraction
 from arc_eval_service.services.mapping import (
     build_case,
     metric_version,
@@ -35,18 +36,18 @@ def _library() -> Catalog:
     )
 
 
-def _request() -> EvaluateRequest:
-    return EvaluateRequest(
+def _interaction() -> ResolvedInteraction:
+    return ResolvedInteraction(
         input_text="source",
         output_text="summary",
         prompt="Summarize:",
-        metrics=["safety"],
+        metrics=("safety",),
         metadata=EvaluationMetadata(inference_id="inf-1", model_id="mdl-1"),
     )
 
 
 def test_build_case_passes_input_as_grounding_context() -> None:
-    case = build_case(_request(), request_id="req-1")
+    case = build_case(_interaction(), request_id="req-1")
     assert case.request_id == "req-1"
     assert case.output == "summary"
     # input_text doubles as grounding context for grounded metrics.
@@ -68,7 +69,7 @@ def test_to_metric_result_carries_evaluator_version() -> None:
 
 
 def test_new_eval_request_flattens_metadata() -> None:
-    row = new_eval_request(_request(), request_id="req-1")
+    row = new_eval_request(_interaction(), request_id="req-1")
     assert row.id == "req-1"
     assert row.inference_id == "inf-1"
     assert row.model_id == "mdl-1"
@@ -76,8 +77,8 @@ def test_new_eval_request_flattens_metadata() -> None:
 
 
 def test_new_eval_results_omits_judge_json_for_errored_score() -> None:
-    request = _request()
-    case = build_case(request, request_id="req-1")
+    interaction = _interaction()
+    case = build_case(interaction, request_id="req-1")
     scored = [
         MetricScore(
             metric="safety",
@@ -91,7 +92,11 @@ def test_new_eval_results_omits_judge_json_for_errored_score() -> None:
         MetricScore(metric="safety", score=0.0, passed=False, error="boom"),
     ]
     rows = new_eval_results(
-        scored, request_id="req-1", request=request, case=case, library=_library()
+        scored,
+        request_id="req-1",
+        interaction=interaction,
+        case=case,
+        library=_library(),
     )
     assert rows[0].judge is not None and rows[0].judge["model"] == "stub-judge"
     assert rows[1].judge is None and rows[1].error == "boom"

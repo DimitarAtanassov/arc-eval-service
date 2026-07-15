@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel
 from sqlalchemy import create_engine, text
@@ -222,12 +223,11 @@ async def client(clean_db: str) -> AsyncIterator[AsyncClient]:
 
 
 @pytest.fixture
-async def stub_client(clean_db: str) -> AsyncIterator[AsyncClient]:
-    """A client whose judge model is stubbed to a fixed passing verdict.
+def stub_app(clean_db: str) -> FastAPI:
+    """The ASGI app with only the judge model stubbed (real service, engine, DB).
 
-    Only the model call is faked: the real service, engine, metrics, repositories
-    and database run, so the score -> persist -> respond path is exercised end to
-    end without a network judge model.
+    Returned as the app, not a client, so a test can layer further dependency
+    overrides (for example, the interaction resolver) before issuing requests.
     """
     from arc_eval_service.api.dependencies import get_database, get_evaluation_service
     from arc_eval_service.app import create_app
@@ -254,7 +254,18 @@ async def stub_client(clean_db: str) -> AsyncIterator[AsyncClient]:
 
     app = create_app()
     app.dependency_overrides[get_evaluation_service] = _build_service
-    transport = ASGITransport(app=app)
+    return app
+
+
+@pytest.fixture
+async def stub_client(stub_app: FastAPI) -> AsyncIterator[AsyncClient]:
+    """A client whose judge model is stubbed to a fixed passing verdict.
+
+    Only the model call is faked: the real service, engine, metrics, repositories
+    and database run, so the score -> persist -> respond path is exercised end to
+    end without a network judge model.
+    """
+    transport = ASGITransport(app=stub_app)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:
         yield async_client
 

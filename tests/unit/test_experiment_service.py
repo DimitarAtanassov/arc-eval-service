@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from arc_eval_service.api.schemas import EvaluateRequest, EvaluateResponse
+from arc_eval_service.api.schemas import EvaluateResponse
 from arc_eval_service.clients.lab_inference_client import (
     InferenceResult,
     InferenceRunRequest,
@@ -33,6 +33,7 @@ from arc_eval_service.services.experiment_service import (
     RunStore,
     Scorer,
 )
+from arc_eval_service.services.interaction import ResolvedInteraction
 
 pytestmark = pytest.mark.unit
 
@@ -131,12 +132,12 @@ class _FakeLab:
 class _FakeEval:
     def __init__(self, response: EvaluateResponse | None = None) -> None:
         self.response = response or EvaluateResponse(results=[])
-        self.calls: list[EvaluateRequest] = []
+        self.calls: list[ResolvedInteraction] = []
 
     async def score(
-        self, request: EvaluateRequest, *, correlation_id: str | None = None
+        self, interaction: ResolvedInteraction, *, correlation_id: str | None = None
     ) -> ScoredEvaluation:
-        self.calls.append(request)
+        self.calls.append(interaction)
         return ScoredEvaluation(request_id="req-9", response=self.response)
 
 

@@ -76,6 +76,18 @@ class ModelNotFoundError(Exception):
         super().__init__(f"model not found: {name}")
 
 
+class InferenceNotFoundError(Exception):
+    """Raised when an evaluate request names an inference_id the lab does not have (404).
+
+    The reference could not be resolved, so scoring fails closed (404) rather than
+    silently scoring nothing.
+    """
+
+    def __init__(self, inference_id: str) -> None:
+        self.inference_id = inference_id
+        super().__init__(f"inference not found: {inference_id}")
+
+
 class ModelInactiveError(Exception):
     def __init__(self, name: str) -> None:
         self.name = name

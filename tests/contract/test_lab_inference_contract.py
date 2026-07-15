@@ -13,6 +13,7 @@ from arc_eval_service.clients.lab_inference_client import (
     build_lab_inference_client,
 )
 from arc_eval_service.domain.errors import (
+    InferenceNotFoundError,
     LabInferenceError,
     LabRequestInvalidError,
     ModelInactiveError,
@@ -175,6 +176,72 @@ async def test_bad_schema_maps_to_lab_inference_error() -> None:
     client = _client(lambda _: httpx.Response(200, json={"id": "x"}))
     with pytest.raises(LabInferenceError):
         await client.run(_request())
+
+
+async def test_get_inference_fetches_and_parses() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["cid"] = request.headers.get("X-Correlation-ID")
+        return httpx.Response(200, json=_RESPONSE)
+
+    client = _client(handler)
+    result = await client.get_inference("inf-1", correlation_id="cid-2")
+    await client.aclose()
+
+    assert seen["url"] == "http://lab/inference/inf-1"
+    assert seen["cid"] == "cid-2"
+    assert isinstance(result, InferenceResult)
+    assert result.output_text == "summary"
+
+
+async def test_get_inference_not_found_maps_to_inference_not_found() -> None:
+    client = _client(lambda _: httpx.Response(404, json={"detail": "unknown"}))
+    with pytest.raises(InferenceNotFoundError):
+        await client.get_inference("missing")
+
+
+async def test_get_inference_unprocessable_maps_to_lab_request_invalid() -> None:
+    client = _client(lambda _: httpx.Response(422, json={"detail": "badly formed id"}))
+    with pytest.raises(LabRequestInvalidError):
+        await client.get_inference("not-a-uuid")
+
+
+async def test_get_inference_server_error_maps_to_lab_inference_error() -> None:
+    client = _client(lambda _: httpx.Response(500, text="boom"))
+    with pytest.raises(LabInferenceError):
+        await client.get_inference("inf-1")
+
+
+async def test_get_inference_connect_error_maps_to_lab_inference_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route", request=request)
+
+    client = _client(handler)
+    with pytest.raises(LabInferenceError):
+        await client.get_inference("inf-1")
+
+
+async def test_get_inference_transport_error_maps_to_lab_inference_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    client = _client(handler)
+    with pytest.raises(LabInferenceError):
+        await client.get_inference("inf-1")
+
+
+async def test_get_inference_non_json_maps_to_lab_inference_error() -> None:
+    client = _client(lambda _: httpx.Response(200, content=b"not json"))
+    with pytest.raises(LabInferenceError):
+        await client.get_inference("inf-1")
+
+
+async def test_get_inference_bad_schema_maps_to_lab_inference_error() -> None:
+    client = _client(lambda _: httpx.Response(200, json={"id": "x"}))
+    with pytest.raises(LabInferenceError):
+        await client.get_inference("inf-1")
 
 
 def test_build_returns_none_without_url() -> None:
