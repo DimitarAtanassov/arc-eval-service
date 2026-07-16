@@ -15,7 +15,6 @@ import socket
 import subprocess
 import tempfile
 from collections.abc import AsyncIterator, Callable, Iterator
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -24,15 +23,18 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel
 from sqlalchemy import create_engine, text
 
-from arc_eval_service.clients.lab_inference_client import (
-    InferenceResult,
-    InferenceRunRequest,
-)
 from arc_eval_service.judging.ports import JudgeModel, ModelCompletion, ModelSettings
 from arc_eval_service.judging.profiles import ModelProfile, ModelRegistry
 
 # Truncated child-first; CASCADE covers the foreign keys either way.
-_TABLES = ("experiment_runs", "evaluation_results", "experiments", "eval_requests")
+_TABLES = (
+    "experiment_run_items",
+    "experiment_dataset_entries",
+    "experiment_runs",
+    "evaluation_results",
+    "experiments",
+    "eval_requests",
+)
 
 # A judge verdict that parses to a passing score, used by ``stub_client``.
 _STUB_VERDICT = (
@@ -190,7 +192,6 @@ def _reset_caches() -> None:
     for cache in (
         deps.get_database,
         deps.get_catalog,
-        deps.get_lab_inference_client,
         get_settings,
     ):
         cache.cache_clear()
@@ -270,61 +271,28 @@ async def stub_client(stub_app: FastAPI) -> AsyncIterator[AsyncClient]:
         yield async_client
 
 
-class _FakeLabClient:
-    """A lab inference client returning a canned inference, or raising a set error.
-
-    Lets the experiment API tests exercise the real scoring and persistence path
-    without an HTTP call to arc-model-lab. Set error to make a run fail.
-    """
-
-    def __init__(self) -> None:
-        self.result = InferenceResult(
-            id="inf-1",
-            model_id="mdl-1",
-            input_text="Paris is the capital of France and its largest city.",
-            prompt="Summarize the text.",
-            output_text="Paris is France's capital.",
-            latency_ms=10,
-            prompt_tokens=5,
-            completion_tokens=3,
-            created_at=datetime.now(UTC),
-        )
-        self.error: Exception | None = None
-
-    async def run(
-        self, request: InferenceRunRequest, *, correlation_id: str | None = None
-    ) -> InferenceResult:
-        if self.error is not None:
-            raise self.error
-        return self.result
-
-
 @pytest.fixture
-async def experiment_env(
-    clean_db: str,
-) -> AsyncIterator[tuple[AsyncClient, _FakeLabClient]]:
-    """An app whose experiment service uses a fake lab and the stub judge.
+async def experiment_client(clean_db: str) -> AsyncIterator[AsyncClient]:
+    """An app whose experiment service uses the stub judge and real repositories.
 
-    Yields the client and the fake lab so a test can make the lab raise. The real
-    experiment repositories, scoring, and database run, so create -> run -> score
-    -> persist -> aggregate is exercised end to end without a network call.
+    The real experiment repositories, dataset store, scoring, and database run, so
+    create -> add dataset -> run -> score -> persist -> aggregate is exercised end to
+    end without a network call.
     """
     from arc_eval_service.api.dependencies import get_database, get_experiment_service
     from arc_eval_service.app import create_app
     from arc_eval_service.catalog import load_catalog
     from arc_eval_service.db.repositories import (
+        DatasetEntryRepository,
         EvalRequestRepository,
         EvaluationResultRepository,
-    )
-    from arc_eval_service.db.repositories.experiments import (
         ExperimentRepository,
         ExperimentRunRepository,
+        RunItemRepository,
     )
     from arc_eval_service.judging.engine import JudgeEngine
     from arc_eval_service.services.evaluation_service import EvaluationService
     from arc_eval_service.services.experiment_service import ExperimentService
-
-    fake_lab = _FakeLabClient()
 
     def _build_service() -> ExperimentService:
         database = get_database()
@@ -339,13 +307,15 @@ async def experiment_env(
         )
         return ExperimentService(
             experiments=ExperimentRepository(database.sessionmaker),
+            datasets=DatasetEntryRepository(database.sessionmaker),
             runs=ExperimentRunRepository(database.sessionmaker),
-            lab_client=fake_lab,
+            run_items=RunItemRepository(database.sessionmaker),
             evaluation=evaluation,
+            metric_names=frozenset(library.metrics),
         )
 
     app = create_app()
     app.dependency_overrides[get_experiment_service] = _build_service
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:
-        yield async_client, fake_lab
+        yield async_client

@@ -15,11 +15,11 @@ from arc_eval_service.api.schemas import MetricResult
 from arc_eval_service.catalog import Catalog
 from arc_eval_service.db.records import NewEvalRequest, NewEvaluationResult
 from arc_eval_service.domain.evaluation import EvaluationCase, MetricScore
-from arc_eval_service.services.interaction import ResolvedInteraction
+from arc_eval_service.services.interaction import Interaction
 
 
-def build_case(interaction: ResolvedInteraction, *, request_id: str) -> EvaluationCase:
-    """Map the resolved interaction onto the judging engine's case.
+def build_case(interaction: Interaction, *, request_id: str) -> EvaluationCase:
+    """Map the interaction onto the judging engine's case.
 
     ``input_text`` is also passed as grounding ``context`` so grounded metrics
     (faithfulness) can check the output against the source without a separate
@@ -51,19 +51,21 @@ def to_metric_result(score: MetricScore, *, library: Catalog) -> MetricResult:
     )
 
 
-def new_eval_request(
-    interaction: ResolvedInteraction, *, request_id: str
-) -> NewEvalRequest:
-    """Build the request row to persist before scoring."""
-    metadata = interaction.metadata
+def new_eval_request(interaction: Interaction, *, request_id: str) -> NewEvalRequest:
+    """Build the request row to persist before scoring.
+
+    The evaluator scores supplied text, so it carries no lab correlation: prompt and
+    the inference/model ids are left null and the metadata is empty. Those columns
+    are retained for the read surface and slimmed in a later migration.
+    """
     return NewEvalRequest(
         id=request_id,
         input_text=interaction.input_text,
         output_text=interaction.output_text,
-        prompt=interaction.prompt,
-        inference_id=metadata.inference_id,
-        model_id=metadata.model_id,
-        request_metadata=metadata.model_dump(),
+        prompt=None,
+        inference_id=None,
+        model_id=None,
+        request_metadata={},
     )
 
 
@@ -71,19 +73,17 @@ def new_eval_results(
     scored: list[MetricScore],
     *,
     request_id: str,
-    interaction: ResolvedInteraction,
     case: EvaluationCase,
     library: Catalog,
 ) -> list[NewEvaluationResult]:
     """Build one result row per score (successful or errored)."""
-    metadata = interaction.metadata
     variables = _variables(case)
     return [
         NewEvaluationResult(
             id=str(uuid4()),
             eval_request_id=request_id,
-            inference_id=metadata.inference_id,
-            model_id=metadata.model_id,
+            inference_id=None,
+            model_id=None,
             metric_name=score.metric,
             score=score.score,
             passed=score.passed,

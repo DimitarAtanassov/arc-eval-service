@@ -86,8 +86,11 @@ migration: prepare
 downgrade: prepare
 	$(load-dotenv); uv run alembic downgrade -1
 
-.PHONY: run ## Run the main application locally with auto-reload
-run: prepare
+.PHONY: run ## Apply migrations, then run the app locally with auto-reload
+# Depends on `migrate` so a local run is symmetric with the container command
+# (`alembic upgrade head && python -m ...`): the schema is brought to head before
+# serving, so `make run` can never serve against a stale database.
+run: migrate
 	$(load-dotenv); uv run uvicorn $(APP).app:app --reload --reload-dir src \
 		--host "$${ARC_EVAL_API_HOST:-0.0.0.0}" --port "$${ARC_EVAL_API_PORT:-8000}"
 

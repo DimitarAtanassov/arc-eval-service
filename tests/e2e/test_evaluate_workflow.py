@@ -20,9 +20,7 @@ async def test_evaluate_then_read_back_the_results(
     body = {
         "input_text": "The Eiffel Tower is a landmark in Paris, France.",
         "output_text": "The Eiffel Tower is in Paris.",
-        "prompt": "Summarize the text.",
         "metrics": ["faithfulness", "answer_relevance"],
-        "metadata": {"inference_id": "inf-42", "model_id": "qwen-1.5b"},
     }
 
     response = await stub_client.post("/v1/evaluate", json=body)
@@ -48,13 +46,13 @@ async def test_evaluate_then_read_back_the_results(
     finally:
         engine.dispose()
 
-    assert request_row.inference_id == "inf-42"
-    assert request_row.model_id == "qwen-1.5b"
+    assert request_row.inference_id is None
+    assert request_row.model_id is None
     assert request_row.output_text == "The Eiffel Tower is in Paris."
-    # Every result links back to the same request and the caller's inference id.
+    # Every result links back to the same request; the evaluator adds no correlation.
     assert {r.metric_name for r in result_rows} == {"answer_relevance", "faithfulness"}
     assert all(r.eval_request_id == request_row.id for r in result_rows)
-    assert all(r.inference_id == "inf-42" for r in result_rows)
+    assert all(r.inference_id is None for r in result_rows)
     assert all(r.evaluator_version == "v1" for r in result_rows)
     # Judge and prompt provenance are captured on every result.
     assert all(r.judge["name"] == "default" for r in result_rows)

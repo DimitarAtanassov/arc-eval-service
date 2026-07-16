@@ -15,9 +15,7 @@ pytestmark = pytest.mark.integration
 _BODY = {
     "input_text": "Paris is the capital of France and its largest city.",
     "output_text": "Paris is France's capital.",
-    "prompt": "Summarize the text.",
     "metrics": ["faithfulness", "answer_relevance"],
-    "metadata": {"inference_id": "inf-1", "model_id": "mdl-1"},
 }
 
 
@@ -59,8 +57,8 @@ async def test_list_requests_returns_the_seeded_interaction(
     assert response.status_code == 200
     rows = response.json()
     assert len(rows) == 1
-    assert rows[0]["inference_id"] == "inf-1"
-    assert rows[0]["model_id"] == "mdl-1"
+    assert rows[0]["inference_id"] is None
+    assert rows[0]["model_id"] is None
     assert rows[0]["output_preview"] == "Paris is France's capital."
 
 
@@ -90,7 +88,7 @@ async def test_get_request_detail_includes_every_metric_score(
     detail = response.json()
     assert detail["id"] == request_id
     assert detail["input_text"] == _BODY["input_text"]
-    assert detail["metadata"]["inference_id"] == "inf-1"
+    assert detail["metadata"] == {}
     assert {r["metric_name"] for r in detail["results"]} == {
         "faithfulness",
         "answer_relevance",
@@ -116,7 +114,7 @@ async def test_list_results_returns_the_persisted_scores(
     assert response.status_code == 200
     rows = response.json()
     assert {r["metric_name"] for r in rows} == {"faithfulness", "answer_relevance"}
-    assert all(r["model_id"] == "mdl-1" for r in rows)
+    assert all(r["model_id"] is None for r in rows)
 
 
 async def test_list_results_filters_by_metric(stub_client: AsyncClient) -> None:
@@ -129,13 +127,13 @@ async def test_list_results_filters_by_metric(stub_client: AsyncClient) -> None:
     assert {r["metric_name"] for r in rows} == {"faithfulness"}
 
 
-async def test_list_results_filters_by_model_id(stub_client: AsyncClient) -> None:
+async def test_list_results_model_id_filter_is_empty_without_attribution(
+    stub_client: AsyncClient,
+) -> None:
+    # Evaluate no longer carries model attribution, so results have no model_id to
+    # match: the filter runs and returns nothing.
     await _seed(stub_client)
 
-    matched = (
-        await stub_client.get("/v1/results", params={"model_id": "mdl-1"})
-    ).json()
-    absent = (await stub_client.get("/v1/results", params={"model_id": "other"})).json()
+    rows = (await stub_client.get("/v1/results", params={"model_id": "mdl-1"})).json()
 
-    assert len(matched) == 2
-    assert absent == []
+    assert rows == []

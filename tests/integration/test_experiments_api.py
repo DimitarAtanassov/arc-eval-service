@@ -1,216 +1,193 @@
+"""Integration tests for the experiments API (dataset evaluator).
+
+The ``experiment_client`` fixture wires the real experiment repositories, dataset
+store, scoring, and database against a stub judge, so create -> add dataset -> run
+-> score -> persist -> aggregate is exercised without a network call. The plain
+``client`` fixture (real dependency wiring, no judge configured) covers the read
+paths that need no scoring: a missing experiment (404) and an empty listing.
+"""
+
 from __future__ import annotations
 
 from typing import Any
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import create_engine, text
-
-from arc_eval_service.domain.errors import (
-    LabInferenceError,
-    LabNotConfiguredError,
-    LabRequestInvalidError,
-    ModelNotFoundError,
-)
 
 pytestmark = pytest.mark.integration
 
-# The experiment_env fixture yields (client, fake_lab); the lab fake is typed Any
-# here so a test can set fake_lab.error without importing the conftest-private type.
-_Env = tuple[AsyncClient, Any]
 
-_CREATE = {
-    "name": "baseline",
-    "model_name": "candidate",
-    "generation_config": {"temperature": 0.0, "max_output_tokens": 64},
-    "description": "first",
-}
-
-
-async def _create(client: AsyncClient, name: str = "baseline") -> str:
-    response = await client.post("/v1/experiments", json={**_CREATE, "name": name})
-    assert response.status_code == 201
-    return str(response.json()["id"])
+async def _create(
+    client: AsyncClient,
+    *,
+    name: str = "exp",
+    metrics: list[str] | None = None,
+    dataset: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    body: dict[str, object] = {"name": name, "metrics": metrics or ["faithfulness"]}
+    if dataset is not None:
+        body["dataset"] = dataset
+    response = await client.post("/v1/experiments", json=body)
+    return {"status": response.status_code, "body": response.json()}
 
 
-async def test_create_and_get(experiment_env: _Env) -> None:
-    client, _ = experiment_env
-    exp_id = await _create(client)
+async def test_create_with_dataset_returns_size(experiment_client: AsyncClient) -> None:
+    result = await _create(
+        experiment_client, dataset=[{"input_text": "a", "output_text": "b"}]
+    )
 
-    got = await client.get(f"/v1/experiments/{exp_id}")
-    assert got.status_code == 200
-    body = got.json()
-    assert body["name"] == "baseline"
-    assert body["model_name"] == "candidate"
-    assert body["generation_config"] == {"temperature": 0.0, "max_output_tokens": 64}
-    assert body["prompt_template"] is None
-    assert body["variables"] == {}
+    assert result["status"] == 201
+    assert result["body"]["metrics"] == ["faithfulness"]
+    assert result["body"]["dataset_size"] == 1
 
 
-async def test_create_with_prompt_template_echoes_it(experiment_env: _Env) -> None:
-    client, _ = experiment_env
-    response = await client.post(
-        "/v1/experiments",
+async def test_create_unknown_metric_is_404(experiment_client: AsyncClient) -> None:
+    result = await _create(experiment_client, metrics=["not-a-metric"])
+    assert result["status"] == 404
+
+
+async def test_create_duplicate_name_is_409(experiment_client: AsyncClient) -> None:
+    await _create(experiment_client, name="dup")
+    result = await _create(experiment_client, name="dup")
+    assert result["status"] == 409
+
+
+async def test_add_dataset_appends(experiment_client: AsyncClient) -> None:
+    created = (await _create(experiment_client))["body"]
+
+    response = await experiment_client.post(
+        f"/v1/experiments/{created['id']}/dataset",
         json={
-            **_CREATE,
-            "name": "translate-fr",
-            "prompt_template": "translate",
-            "variables": {"target_language": "French"},
+            "entries": [
+                {"input_text": "a", "output_text": "b"},
+                {"input_text": "c", "output_text": "d", "system_text": "be precise"},
+            ]
         },
     )
+
     assert response.status_code == 201
-    body = response.json()
-    assert body["prompt_template"] == "translate"
-    assert body["variables"] == {"target_language": "French"}
+    assert response.json() == {
+        "experiment_id": created["id"],
+        "added": 2,
+        "dataset_size": 2,
+    }
 
 
-async def test_create_variables_without_a_template_is_422(experiment_env: _Env) -> None:
-    client, _ = experiment_env
-    response = await client.post(
-        "/v1/experiments",
-        json={**_CREATE, "name": "bad", "variables": {"x": "y"}},
-    )
-    assert response.status_code == 422
-
-
-async def test_create_duplicate_name_is_409(experiment_env: _Env) -> None:
-    client, _ = experiment_env
-    await _create(client, "dup")
-    response = await client.post("/v1/experiments", json={**_CREATE, "name": "dup"})
+async def test_run_empty_dataset_is_409(experiment_client: AsyncClient) -> None:
+    created = (await _create(experiment_client))["body"]
+    response = await experiment_client.post(f"/v1/experiments/{created['id']}/run")
     assert response.status_code == 409
 
 
-async def test_get_unknown_is_404(experiment_env: _Env) -> None:
-    client, _ = experiment_env
-    response = await client.get("/v1/experiments/missing")
-    assert response.status_code == 404
+async def test_run_scores_the_dataset(experiment_client: AsyncClient) -> None:
+    created = (
+        await _create(
+            experiment_client,
+            metrics=["faithfulness", "answer_relevance"],
+            dataset=[
+                {
+                    "input_text": "Paris is the capital of France.",
+                    "output_text": "Paris is France's capital.",
+                },
+                {"input_text": "The sky is blue.", "output_text": "The sky is blue."},
+            ],
+        )
+    )["body"]
 
-
-async def test_list_experiments(experiment_env: _Env) -> None:
-    client, _ = experiment_env
-    await _create(client, "one")
-    await _create(client, "two")
-    response = await client.get("/v1/experiments", params={"limit": 10})
-    assert response.status_code == 200
-    assert {e["name"] for e in response.json()} == {"one", "two"}
-
-
-async def test_run_with_metrics_scores_and_persists(
-    experiment_env: _Env, clean_db: str
-) -> None:
-    client, _ = experiment_env
-    exp_id = await _create(client)
-
-    response = await client.post(
-        f"/v1/experiments/{exp_id}/run",
-        json={
-            "input_text": "Paris is the capital of France.",
-            "metrics": ["faithfulness"],
-        },
-    )
+    response = await experiment_client.post(f"/v1/experiments/{created['id']}/run")
 
     assert response.status_code == 201
     body = response.json()
-    assert body["inference_id"] == "inf-1"
-    assert body["experiment_id"] == exp_id
-    assert {r["metric_name"] for r in body["evaluation"]["results"]} == {"faithfulness"}
+    assert body["status"] == "completed"
+    assert body["dataset_size"] == 2
+    assert body["scored_count"] == 2
+    scores = {m["metric_name"]: m for m in body["results"]}
+    # The stub judge returns 0.9 for every metric.
+    assert scores["faithfulness"]["average_score"] == pytest.approx(0.9)
+    assert scores["faithfulness"]["evaluated_count"] == 2
 
-    engine = create_engine(clean_db)
-    try:
-        with engine.connect() as conn:
-            runs = conn.execute(
-                text("SELECT inference_id, eval_request_id FROM experiment_runs")
-            ).all()
-    finally:
-        engine.dispose()
-    assert runs[0].inference_id == "inf-1"
-    assert runs[0].eval_request_id is not None
-
-
-async def test_run_without_metrics_skips_evaluation(experiment_env: _Env) -> None:
-    client, _ = experiment_env
-    exp_id = await _create(client)
-    response = await client.post(
-        f"/v1/experiments/{exp_id}/run", json={"input_text": "text"}
-    )
-    assert response.status_code == 201
-    assert response.json()["evaluation"] is None
+    results = (
+        await experiment_client.get(f"/v1/experiments/{created['id']}/results")
+    ).json()
+    result_scores = {m["metric_name"]: m for m in results["metrics"]}
+    assert result_scores["faithfulness"]["average_score"] == pytest.approx(0.9)
 
 
-async def test_run_unknown_experiment_is_404(experiment_env: _Env) -> None:
-    client, _ = experiment_env
-    response = await client.post(
-        "/v1/experiments/missing/run", json={"input_text": "text"}
-    )
+async def test_list_and_get_expose_dataset_size(
+    experiment_client: AsyncClient,
+) -> None:
+    created = (
+        await _create(
+            experiment_client,
+            name="withdata",
+            dataset=[{"input_text": "a", "output_text": "b"}],
+        )
+    )["body"]
+
+    got = (await experiment_client.get(f"/v1/experiments/{created['id']}")).json()
+    assert got["dataset_size"] == 1
+
+    listing = (await experiment_client.get("/v1/experiments")).json()
+    sizes = {experiment["id"]: experiment["dataset_size"] for experiment in listing}
+    assert sizes[created["id"]] == 1
+
+
+async def test_list_dataset_returns_entries_in_order(
+    experiment_client: AsyncClient,
+) -> None:
+    created = (
+        await _create(
+            experiment_client,
+            dataset=[
+                {"input_text": "first", "output_text": "1"},
+                {"input_text": "second", "output_text": "2"},
+            ],
+        )
+    )["body"]
+
+    entries = (
+        await experiment_client.get(f"/v1/experiments/{created['id']}/dataset")
+    ).json()
+
+    assert [e["position"] for e in entries] == [0, 1]
+    assert [e["input_text"] for e in entries] == ["first", "second"]
+
+
+async def test_get_missing_experiment_is_404(client: AsyncClient) -> None:
+    """A missing experiment maps to 404 through the real dependency wiring."""
+    response = await client.get("/v1/experiments/does-not-exist")
+
     assert response.status_code == 404
+    assert "does-not-exist" in response.json()["detail"]
 
 
-async def test_run_lab_down_is_502(experiment_env: _Env) -> None:
-    client, fake_lab = experiment_env
-    fake_lab.error = LabInferenceError("lab down")
-    exp_id = await _create(client)
-    response = await client.post(
-        f"/v1/experiments/{exp_id}/run", json={"input_text": "text"}
-    )
-    assert response.status_code == 502
+async def test_list_experiments_is_empty_on_a_clean_db(client: AsyncClient) -> None:
+    """Listing with no experiments returns an empty page (no dataset-size query fan-out)."""
+    response = await client.get("/v1/experiments")
+
+    assert response.status_code == 200
+    assert response.json() == []
 
 
-async def test_run_invalid_lab_request_is_422(experiment_env: _Env) -> None:
-    client, fake_lab = experiment_env
-    fake_lab.error = LabRequestInvalidError("unknown template variable")
-    exp_id = await _create(client)
-    response = await client.post(
-        f"/v1/experiments/{exp_id}/run", json={"input_text": "text"}
-    )
-    assert response.status_code == 422
+async def test_compare_returns_aggregates_for_both_experiments(
+    experiment_client: AsyncClient,
+) -> None:
+    dataset = [{"input_text": "The sky is blue.", "output_text": "The sky is blue."}]
+    first = (await _create(experiment_client, name="a", dataset=dataset))["body"]
+    second = (await _create(experiment_client, name="b", dataset=dataset))["body"]
+    for experiment in (first, second):
+        await experiment_client.post(f"/v1/experiments/{experiment['id']}/run")
 
-
-async def test_run_lab_not_configured_is_503(experiment_env: _Env) -> None:
-    client, fake_lab = experiment_env
-    fake_lab.error = LabNotConfiguredError("lab not configured")
-    exp_id = await _create(client)
-    response = await client.post(
-        f"/v1/experiments/{exp_id}/run", json={"input_text": "text"}
-    )
-    assert response.status_code == 503
-
-
-async def test_run_unknown_model_is_404(experiment_env: _Env) -> None:
-    client, fake_lab = experiment_env
-    fake_lab.error = ModelNotFoundError("candidate")
-    exp_id = await _create(client)
-    response = await client.post(
-        f"/v1/experiments/{exp_id}/run", json={"input_text": "text"}
-    )
-    assert response.status_code == 404
-
-
-async def test_results_and_compare(experiment_env: _Env) -> None:
-    client, _ = experiment_env
-    exp_id = await _create(client)
-    await client.post(
-        f"/v1/experiments/{exp_id}/run",
-        json={
-            "input_text": "Paris is the capital of France.",
-            "metrics": ["faithfulness"],
-        },
+    response = await experiment_client.get(
+        f"/v1/experiments/{first['id']}/compare/{second['id']}"
     )
 
-    results = await client.get(f"/v1/experiments/{exp_id}/results")
-    assert results.status_code == 200
-    assert "faithfulness" in {m["metric_name"] for m in results.json()["metrics"]}
-
-    compare = await client.get(f"/v1/experiments/{exp_id}/compare/{exp_id}")
-    assert compare.status_code == 200
-    assert len(compare.json()["experiments"]) == 2
-
-
-async def test_dependency_factory_builds_real_service(clean_db: str) -> None:
-    from arc_eval_service.api.dependencies import (
-        get_experiment_service,
-        get_lab_inference_client,
-    )
-    from arc_eval_service.services.experiment_service import ExperimentService
-
-    assert get_lab_inference_client() is None
-    assert isinstance(get_experiment_service(), ExperimentService)
+    assert response.status_code == 200
+    body = response.json()
+    reported_ids = [e["experiment_id"] for e in body["experiments"]]
+    assert reported_ids == [first["id"], second["id"]]
+    for experiment in body["experiments"]:
+        scores = {m["metric_name"]: m for m in experiment["metrics"]}
+        # The stub judge returns 0.9 for every metric.
+        assert scores["faithfulness"]["average_score"] == pytest.approx(0.9)
+        assert scores["faithfulness"]["evaluated_count"] == 1

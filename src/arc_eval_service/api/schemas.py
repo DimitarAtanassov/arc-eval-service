@@ -1,72 +1,33 @@
 """The wire contract for ``POST /v1/evaluate``.
 
-This is the boundary ``arc-model-lab`` calls after inference: it sends a completed
-interaction (:class:`EvaluateRequest`) and receives one score per metric
+The caller sends a completed interaction (:class:`EvaluateRequest`: the input, the
+output, and the metrics to score against) and receives one score per metric
 (:class:`EvaluateResponse`). These DTOs are the public shape of the service; the
 internal judging types live in :mod:`arc_eval_service.domain.evaluation`.
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 # Version of the POST /v1/evaluate request/response wire contract. Bump on any
 # breaking change so a consumer can detect drift instead of failing silently.
 CONTRACT_VERSION = "1.0.0"
 
 
-class EvaluationMetadata(BaseModel):
-    """Caller correlation ids. Extra keys are accepted and stored verbatim."""
-
-    model_config = ConfigDict(extra="allow")
-
-    inference_id: str | None = Field(
-        default=None, description="Id of the inference record being evaluated."
-    )
-    model_id: str | None = Field(
-        default=None, description="Id of the model under test that produced the output."
-    )
-
-
 class EvaluateRequest(BaseModel):
-    """A completed interaction to score.
+    """A completed interaction to score: the input, the output, and the metrics.
 
-    The interaction is supplied one of two ways, and exactly one must be used:
-    inline (``input_text``, ``output_text``, and ``prompt`` together), or by
-    reference (an ``inference_id`` the service resolves from arc-model-lab). The
-    caller always names the metrics explicitly; the service does not infer them
-    from any task classification.
+    The caller always names the metrics explicitly; the service does not infer them
+    from any task classification, and it scores the supplied text as given.
     """
 
-    inference_id: str | None = Field(
-        default=None,
-        min_length=1,
-        description=(
-            "Resolve the interaction from arc-model-lab by this inference id instead "
-            "of sending it inline. Mutually exclusive with input_text/output_text/prompt."
-        ),
+    model_config = ConfigDict(extra="forbid")
+
+    input_text: str = Field(
+        min_length=1, description="The original input (source text or question)."
     )
-    input_text: str | None = Field(
-        default=None,
-        min_length=1,
-        description=(
-            "The original input (source text / question). Required unless "
-            "inference_id is given."
-        ),
-    )
-    output_text: str | None = Field(
-        default=None,
-        min_length=1,
-        description="The model output to evaluate. Required unless inference_id is given.",
-    )
-    prompt: str | None = Field(
-        default=None,
-        min_length=1,
-        description=(
-            "The rendered prompt that produced the output, stored for audit. "
-            "Required unless inference_id is given."
-        ),
-    )
+    output_text: str = Field(min_length=1, description="The model output to evaluate.")
     metrics: list[str] = Field(
         ...,
         min_length=1,
@@ -75,27 +36,6 @@ class EvaluateRequest(BaseModel):
             "rejected with 404."
         ),
     )
-    metadata: EvaluationMetadata = Field(
-        default_factory=EvaluationMetadata,
-        description="Caller correlation ids (inference id, model id). May be empty.",
-    )
-
-    @model_validator(mode="after")
-    def _reference_xor_inline(self) -> EvaluateRequest:
-        inline_fields = (self.input_text, self.output_text, self.prompt)
-        any_inline = any(field is not None for field in inline_fields)
-        all_inline = all(field is not None for field in inline_fields)
-        if self.inference_id is not None:
-            if any_inline:
-                raise ValueError(
-                    "provide either inference_id or the inline interaction, not both"
-                )
-            return self
-        if not all_inline:
-            raise ValueError(
-                "provide inference_id, or all of input_text, output_text, and prompt"
-            )
-        return self
 
 
 class MetricResult(BaseModel):

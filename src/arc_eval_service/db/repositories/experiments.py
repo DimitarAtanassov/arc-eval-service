@@ -8,6 +8,7 @@ from arc_eval_service.db.models import (
     EvaluationResultRow,
     ExperimentRow,
     ExperimentRunRow,
+    RunItemRow,
 )
 from arc_eval_service.db.records import (
     NewExperiment,
@@ -44,10 +45,7 @@ def new_experiment_to_row(item: NewExperiment) -> ExperimentRow:
     return ExperimentRow(
         id=item.id,
         name=item.name,
-        model_name=item.model_name,
-        generation_config=item.generation_config,
-        prompt_template=item.prompt_template,
-        variables=item.variables,
+        metrics=item.metrics,
         description=item.description,
         created_at=item.created_at,
     )
@@ -58,10 +56,7 @@ def row_to_stored_experiment(row: ExperimentRow) -> StoredExperiment:
     return StoredExperiment(
         id=row.id,
         name=row.name,
-        model_name=row.model_name,
-        generation_config=row.generation_config,
-        prompt_template=row.prompt_template,
-        variables=row.variables,
+        metrics=row.metrics,
         description=row.description,
         created_at=row.created_at,
     )
@@ -72,8 +67,7 @@ def new_experiment_run_to_row(item: NewExperimentRun) -> ExperimentRunRow:
     return ExperimentRunRow(
         id=item.id,
         experiment_id=item.experiment_id,
-        inference_id=item.inference_id,
-        eval_request_id=item.eval_request_id,
+        status=item.status,
         created_at=item.created_at,
     )
 
@@ -120,13 +114,20 @@ class ExperimentRepository(BaseRepository):
     async def aggregate_scores(
         self, experiment_id: str
     ) -> list[ExperimentMetricAggregate]:
-        """Average score and count per metric for an experiment's evaluated inferences.
+        """Average score and count per metric for the experiment's latest run.
 
-        Joins experiment_runs to evaluation_results on eval_request_id (the precise
-        link that avoids double-counting re-evaluations). Filters error IS NULL to
-        exclude failed metric scores from the aggregate. Runs without an eval_request_id
-        are excluded by the INNER JOIN.
+        Resolves the experiment's latest run, then aggregates the eval results its run
+        items point at (joined by eval_request_id). Filters error IS NULL so a failed
+        metric score is not averaged in as a real zero. Returns an empty list when the
+        experiment has no runs yet.
         """
+        latest_run = (
+            select(ExperimentRunRow.id)
+            .where(ExperimentRunRow.experiment_id == experiment_id)
+            .order_by(ExperimentRunRow.created_at.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
         stmt = (
             select(
                 EvaluationResultRow.metric_name,
@@ -134,11 +135,11 @@ class ExperimentRepository(BaseRepository):
                 func.count().label("evaluated_count"),
             )
             .join(
-                ExperimentRunRow,
-                ExperimentRunRow.eval_request_id == EvaluationResultRow.eval_request_id,
+                RunItemRow,
+                RunItemRow.eval_request_id == EvaluationResultRow.eval_request_id,
             )
             .where(
-                ExperimentRunRow.experiment_id == experiment_id,
+                RunItemRow.run_id == latest_run,
                 EvaluationResultRow.error.is_(None),
             )
             .group_by(EvaluationResultRow.metric_name)

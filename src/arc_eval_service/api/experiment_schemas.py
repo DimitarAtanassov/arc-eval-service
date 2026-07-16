@@ -1,134 +1,125 @@
+"""Wire contract for the experiments surface.
+
+An experiment owns a metric set and a dataset of completed interactions. Requests
+create an experiment (optionally seeding its dataset), append dataset entries, and
+run the metrics over the dataset. Responses expose the experiment, the dataset, and
+per-metric aggregates. The service-layer result types are mapped here so the routes
+stay thin.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-from arc_eval_service.api.schemas import EvaluateResponse
-from arc_eval_service.clients.lab_inference_client import InferenceResult
-from arc_eval_service.db.records import StoredExperiment
+from arc_eval_service.db.records import StoredDatasetEntry, StoredExperiment
 from arc_eval_service.domain.experiment import (
     ExperimentMetricAggregate,
     ExperimentResults,
-    GenerationConfig,
+)
+from arc_eval_service.services.experiment_service import (
+    DatasetAddition,
+    DatasetEntryInput,
+    ExperimentRunResult,
 )
 
 
-class GenerationConfigSchema(BaseModel):
+class DatasetEntryRequest(BaseModel):
+    """One completed interaction to add to an experiment's dataset."""
+
     model_config = ConfigDict(extra="forbid")
 
-    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    max_output_tokens: int = Field(default=256, ge=1)
+    input_text: str = Field(min_length=1, description="The original input.")
+    output_text: str = Field(min_length=1, description="The output to score.")
+    system_text: str | None = Field(
+        default=None, min_length=1, description="Optional system prompt used."
+    )
 
-    def to_domain(self) -> GenerationConfig:
-        return GenerationConfig(
-            temperature=self.temperature,
-            max_output_tokens=self.max_output_tokens,
+    def to_input(self) -> DatasetEntryInput:
+        return DatasetEntryInput(
+            input_text=self.input_text,
+            output_text=self.output_text,
+            system_text=self.system_text,
         )
 
 
 class ExperimentCreateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+    model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, description="Unique experiment name.")
     description: str | None = None
-    model_name: str = Field(
-        min_length=1, description="Model name to run under this experiment."
-    )
-    generation_config: GenerationConfigSchema = Field(
-        default_factory=GenerationConfigSchema
-    )
-    prompt_template: str | None = Field(
-        default=None,
+    metrics: list[str] = Field(
         min_length=1,
-        description="Prompt template that frames the run's input; omit to send input as-is.",
+        description="Metrics this experiment scores its dataset against.",
     )
-    variables: dict[str, str] = Field(
-        default_factory=dict,
-        description="Values filling the template's placeholders, fixed for the experiment.",
+    dataset: list[DatasetEntryRequest] | None = Field(
+        default=None,
+        description="Optional dataset entries to seed the experiment with.",
     )
-
-    @model_validator(mode="after")
-    def _variables_require_a_template(self) -> ExperimentCreateRequest:
-        if self.variables and self.prompt_template is None:
-            raise ValueError("variables require a prompt_template")
-        return self
 
 
 class ExperimentResponse(BaseModel):
-    model_config = ConfigDict(protected_namespaces=())
-
     id: str
     name: str
     description: str | None
-    model_name: str
-    generation_config: GenerationConfigSchema
-    prompt_template: str | None
-    variables: dict[str, str]
+    metrics: list[str]
+    dataset_size: int
     created_at: datetime
 
     @classmethod
-    def from_record(cls, record: StoredExperiment) -> ExperimentResponse:
+    def from_record(
+        cls, record: StoredExperiment, *, dataset_size: int
+    ) -> ExperimentResponse:
         return cls(
             id=record.id,
             name=record.name,
             description=record.description,
-            model_name=record.model_name,
-            generation_config=GenerationConfigSchema.model_validate(
-                record.generation_config
-            ),
-            prompt_template=record.prompt_template,
-            variables=record.variables,
+            metrics=record.metrics,
+            dataset_size=dataset_size,
             created_at=record.created_at,
         )
 
 
-class ExperimentRunRequest(BaseModel):
+class AddDatasetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    input_text: str = Field(
-        min_length=1, description="Text to run through the experiment."
-    )
-    metrics: list[str] | None = Field(
-        default=None,
-        description="Metrics to score the output against. Omit to skip evaluation.",
+    entries: list[DatasetEntryRequest] = Field(
+        min_length=1, description="Dataset entries to append."
     )
 
 
-class ExperimentRunResponse(BaseModel):
-    model_config = ConfigDict(protected_namespaces=())
-
-    inference_id: str
-    model_id: str
-    input_text: str
-    prompt: str
-    output_text: str
-    latency_ms: int
-    prompt_tokens: int | None
-    completion_tokens: int | None
+class AddDatasetResponse(BaseModel):
     experiment_id: str
-    created_at: datetime
-    evaluation: EvaluateResponse | None = None
+    added: int
+    dataset_size: int
 
     @classmethod
-    def from_run(
-        cls,
-        experiment_id: str,
-        inference: InferenceResult,
-        evaluation: EvaluateResponse | None,
-    ) -> ExperimentRunResponse:
+    def from_domain(cls, addition: DatasetAddition) -> AddDatasetResponse:
         return cls(
-            inference_id=inference.id,
-            model_id=inference.model_id,
-            input_text=inference.input_text,
-            prompt=inference.prompt,
-            output_text=inference.output_text,
-            latency_ms=inference.latency_ms,
-            prompt_tokens=inference.prompt_tokens,
-            completion_tokens=inference.completion_tokens,
-            experiment_id=experiment_id,
-            created_at=inference.created_at,
-            evaluation=evaluation,
+            experiment_id=addition.experiment_id,
+            added=addition.added,
+            dataset_size=addition.dataset_size,
+        )
+
+
+class DatasetEntryResponse(BaseModel):
+    id: str
+    position: int
+    input_text: str
+    system_text: str | None
+    output_text: str
+    created_at: datetime
+
+    @classmethod
+    def from_record(cls, record: StoredDatasetEntry) -> DatasetEntryResponse:
+        return cls(
+            id=record.id,
+            position=record.position,
+            input_text=record.input_text,
+            system_text=record.system_text,
+            output_text=record.output_text,
+            created_at=record.created_at,
         )
 
 
@@ -143,6 +134,26 @@ class MetricAggregateOut(BaseModel):
             metric_name=aggregate.metric_name,
             average_score=aggregate.average_score,
             evaluated_count=aggregate.evaluated_count,
+        )
+
+
+class ExperimentRunResponse(BaseModel):
+    run_id: str
+    experiment_id: str
+    status: str
+    dataset_size: int
+    scored_count: int
+    results: list[MetricAggregateOut]
+
+    @classmethod
+    def from_domain(cls, result: ExperimentRunResult) -> ExperimentRunResponse:
+        return cls(
+            run_id=result.run_id,
+            experiment_id=result.experiment_id,
+            status=result.status,
+            dataset_size=result.dataset_size,
+            scored_count=result.scored_count,
+            results=[MetricAggregateOut.from_domain(a) for a in result.results],
         )
 
 

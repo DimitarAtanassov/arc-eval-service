@@ -12,28 +12,23 @@ from functools import lru_cache
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, Header
+from fastapi import Header
 
 from arc_eval_service.catalog import Catalog, load_catalog
-from arc_eval_service.clients.lab_inference_client import (
-    LabInferenceClient,
-    LabInferenceSettings,
-    build_lab_inference_client,
-)
 from arc_eval_service.core.config import get_settings
 from arc_eval_service.db.engine import Database
 from arc_eval_service.db.repositories import (
+    DatasetEntryRepository,
     EvalRequestRepository,
     EvaluationResultRepository,
     ExperimentRepository,
     ExperimentRunRepository,
+    RunItemRepository,
 )
 from arc_eval_service.judging.engine import JudgeEngine
 from arc_eval_service.judging.profiles import ModelRegistry
-from arc_eval_service.services.evaluation_coordinator import EvaluationCoordinator
 from arc_eval_service.services.evaluation_service import EvaluationService
 from arc_eval_service.services.experiment_service import ExperimentService
-from arc_eval_service.services.interaction_resolver import InteractionResolver
 from arc_eval_service.services.read_service import ReadService
 
 
@@ -89,38 +84,17 @@ def get_read_service() -> ReadService:
     )
 
 
-@lru_cache(maxsize=1)
-def get_lab_inference_client() -> LabInferenceClient | None:
-    """Return the process-wide lab inference client, or None when unconfigured."""
-    return build_lab_inference_client(LabInferenceSettings())
-
-
 def get_experiment_service() -> ExperimentService:
-    """Return an ExperimentService wired to experiment repos, the lab client, and the eval service."""
+    """Return an ExperimentService wired to the experiment repos and the eval service."""
     database = get_database()
     return ExperimentService(
         experiments=ExperimentRepository(database.sessionmaker),
+        datasets=DatasetEntryRepository(database.sessionmaker),
         runs=ExperimentRunRepository(database.sessionmaker),
-        lab_client=get_lab_inference_client(),
+        run_items=RunItemRepository(database.sessionmaker),
         evaluation=get_evaluation_service(),
+        metric_names=frozenset(get_catalog().metrics),
     )
-
-
-def get_interaction_resolver() -> InteractionResolver:
-    """Return an InteractionResolver over the lab client (reader is None when unconfigured)."""
-    return InteractionResolver(get_lab_inference_client())
-
-
-def get_evaluation_coordinator(
-    resolver: Annotated[InteractionResolver, Depends(get_interaction_resolver)],
-    evaluation: Annotated[EvaluationService, Depends(get_evaluation_service)],
-) -> EvaluationCoordinator:
-    """Return the evaluate use-case: resolve the interaction, then score it.
-
-    The collaborators are declared with Depends (not called directly) so a test can
-    override get_evaluation_service or get_interaction_resolver and have it apply here.
-    """
-    return EvaluationCoordinator(resolver=resolver, evaluation=evaluation)
 
 
 def get_correlation_id(
