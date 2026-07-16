@@ -24,6 +24,7 @@ from arc_eval_service.domain.errors import (
     EmptyDatasetError,
     UnknownMetricError,
 )
+from arc_eval_service.domain.experiment import ExperimentMetricAggregate
 from arc_eval_service.services.evaluation_service import ScoredEvaluation
 from arc_eval_service.services.experiment_service import (
     DatasetEntryInput,
@@ -49,7 +50,9 @@ class _FakeExperiments:
     async def list_recent(self, limit: int) -> list[StoredExperiment]:
         return list(self.items.values())[:limit]
 
-    async def aggregate_scores(self, experiment_id: str) -> list:
+    async def aggregate_scores(
+        self, experiment_id: str
+    ) -> list[ExperimentMetricAggregate]:
         return []
 
 

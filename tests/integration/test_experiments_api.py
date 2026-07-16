@@ -1,11 +1,15 @@
 """Integration tests for the experiments API (dataset evaluator).
 
-Uses the ``experiment_client`` fixture: the real experiment repositories, dataset
-store, scoring, and database run against a stub judge, so create -> add dataset ->
-run -> score -> persist -> aggregate is exercised without a network call.
+The ``experiment_client`` fixture wires the real experiment repositories, dataset
+store, scoring, and database against a stub judge, so create -> add dataset -> run
+-> score -> persist -> aggregate is exercised without a network call. The plain
+``client`` fixture (real dependency wiring, no judge configured) covers the read
+paths that need no scoring: a missing experiment (404) and an empty listing.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
@@ -19,7 +23,7 @@ async def _create(
     name: str = "exp",
     metrics: list[str] | None = None,
     dataset: list[dict[str, str]] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     body: dict[str, object] = {"name": name, "metrics": metrics or ["faithfulness"]}
     if dataset is not None:
         body["dataset"] = dataset
@@ -147,3 +151,43 @@ async def test_list_dataset_returns_entries_in_order(
 
     assert [e["position"] for e in entries] == [0, 1]
     assert [e["input_text"] for e in entries] == ["first", "second"]
+
+
+async def test_get_missing_experiment_is_404(client: AsyncClient) -> None:
+    """A missing experiment maps to 404 through the real dependency wiring."""
+    response = await client.get("/v1/experiments/does-not-exist")
+
+    assert response.status_code == 404
+    assert "does-not-exist" in response.json()["detail"]
+
+
+async def test_list_experiments_is_empty_on_a_clean_db(client: AsyncClient) -> None:
+    """Listing with no experiments returns an empty page (no dataset-size query fan-out)."""
+    response = await client.get("/v1/experiments")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_compare_returns_aggregates_for_both_experiments(
+    experiment_client: AsyncClient,
+) -> None:
+    dataset = [{"input_text": "The sky is blue.", "output_text": "The sky is blue."}]
+    first = (await _create(experiment_client, name="a", dataset=dataset))["body"]
+    second = (await _create(experiment_client, name="b", dataset=dataset))["body"]
+    for experiment in (first, second):
+        await experiment_client.post(f"/v1/experiments/{experiment['id']}/run")
+
+    response = await experiment_client.get(
+        f"/v1/experiments/{first['id']}/compare/{second['id']}"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    reported_ids = [e["experiment_id"] for e in body["experiments"]]
+    assert reported_ids == [first["id"], second["id"]]
+    for experiment in body["experiments"]:
+        scores = {m["metric_name"]: m for m in experiment["metrics"]}
+        # The stub judge returns 0.9 for every metric.
+        assert scores["faithfulness"]["average_score"] == pytest.approx(0.9)
+        assert scores["faithfulness"]["evaluated_count"] == 1
